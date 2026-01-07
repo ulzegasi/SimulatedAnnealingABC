@@ -1,4 +1,5 @@
-# simulated_annealing_abc (Python 3.14)
+# sabc.py — core Simulated Annealing ABC algorithm
+# Python 3.14
 
 import math
 import warnings

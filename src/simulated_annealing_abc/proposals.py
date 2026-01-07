@@ -14,9 +14,9 @@ class Proposal:
         """Update internal state (e.g. covariance)."""
         return
 
-
+# Interface to update the proposal state
 def update_proposal(proposal: Proposal, population):
-    """Update the proposal's internal state (Julia-like interface)."""
+    """Update the proposal's internal state."""
     proposal.update(population)
 
 
@@ -24,7 +24,7 @@ def update_proposal(proposal: Proposal, population):
 # Random Walk proposal
 # -------------------------------------------------------
 
-@dataclass
+@dataclass(init=False)
 class RandomWalk(Proposal):
     """
     Gaussian random walk proposal.
@@ -37,7 +37,7 @@ class RandomWalk(Proposal):
         Jump variance (1D) or covariance matrix (nD), adapted from population.
     """
     beta: float
-    Sigma: object  # scalar variance or covariance matrix
+    Sigma: float | np.ndarray  # scalar variance or covariance matrix
 
     def __init__(self, *, beta=0.8, n_para=1):
         if not (0.0 < beta <= 1.0):
@@ -53,10 +53,10 @@ class RandomWalk(Proposal):
 
         # 1D case: Sigma is a scalar variance
         if np.isscalar(self.Sigma):
-            sigma = float(self.Sigma)
-            if sigma <= 0.0:
+            var = float(self.Sigma)
+            if var <= 0.0:
                 raise RuntimeError("RandomWalk Sigma not updated yet.")
-            step = np.random.normal(loc=0.0, scale=np.sqrt(sigma))
+            step = np.random.normal(loc=0.0, scale=np.sqrt(var))
             return theta + step, log_factor
 
         # nD case: Sigma is a covariance matrix
@@ -65,7 +65,7 @@ class RandomWalk(Proposal):
             raise ValueError("RandomWalk Sigma must be a covariance matrix.")
         d = cov.shape[0]
         step = np.random.multivariate_normal(mean=np.zeros(d), cov=cov)
-        theta_arr = np.asarray(theta, dtype=float)
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=float))
         return theta_arr + step, log_factor
 
     def update(self, population):
@@ -73,7 +73,7 @@ class RandomWalk(Proposal):
         if np.isscalar(self.Sigma):
             arr = np.array([np.atleast_1d(p)[0] for p in population], dtype=float)
             cov = np.cov(arr, bias=False)  # variance in 1D
-            self.Sigma = self.beta * float(cov)
+            self.Sigma = max(self.beta * float(cov), 1e-12)
             return
 
         # nD case
@@ -87,7 +87,7 @@ class RandomWalk(Proposal):
 # Differential Evolution proposal
 # -------------------------------------------------------
 
-@dataclass
+@dataclass(init=False)
 class DifferentialEvolution(Proposal):
     """
     Differential Evolution proposal.
@@ -96,10 +96,10 @@ class DifferentialEvolution(Proposal):
     matching the typical DE scaling used in ensemble samplers.
     """
     gamma0: float
-    sigma_gamma: float = 1e-5
+    sigma_gamma: float
 
     def __init__(self, *, gamma0=None, n_para=None, sigma_gamma=1e-5):
-        if (gamma0 is None) == (n_para is None):
+        if (gamma0 is None) == (n_para is None):  # Error if both are None or both are provided
             raise ValueError("Provide exactly one of `gamma0` or `n_para`.")
         if gamma0 is None:
             gamma0 = 2.38 / np.sqrt(2.0 * float(n_para))
@@ -112,19 +112,18 @@ class DifferentialEvolution(Proposal):
             raise ValueError("Population must contain at least 2 particles.")
 
         # pick two distinct partners
-        i1 = i2 = 0
-        while i1 == i2:
-            i1 = np.random.randint(0, n)
-            i2 = np.random.randint(0, n)
+        i1, i2 = np.random.choice(n, size=2, replace=False)
 
-        theta1 = np.asarray(population[i1], dtype=float)
-        theta2 = np.asarray(population[i2], dtype=float)
-        theta_arr = np.asarray(theta, dtype=float)
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=float))
+        theta1 = np.atleast_1d(np.asarray(population[i1], dtype=float))
+        theta2 = np.atleast_1d(np.asarray(population[i2], dtype=float))
 
         gamma = self.gamma0 * (1.0 + self.sigma_gamma * np.random.randn())
 
         log_factor = 0.0
         proposal = theta_arr + gamma * (theta1 - theta2)
+        if proposal.size == 1:
+            return float(proposal[0]), log_factor
         return proposal, log_factor
 
     def update(self, population):
@@ -139,17 +138,30 @@ class DifferentialEvolution(Proposal):
 class StretchMove(Proposal):
     """
     Stretch move proposal (Goodman & Weare / emcee-style).
+    
+    Parameter
+    ---------
+    a : float
+        Stretch scale parameter. Must be > 1.
+        Common default is a=2.0.
     """
     a: float = 2.0
 
+    def __post_init__(self):
+        # Validate parameter
+        if self.a <= 1.0:
+            raise ValueError("StretchMove parameter 'a' must be > 1.")
+    
     def __call__(self, theta, population):
         n = len(population)
         if n < 1:
             raise ValueError("Population must not be empty.")
 
         i = np.random.randint(0, n)
-        partner = np.asarray(population[i], dtype=float)
-        theta_arr = np.asarray(theta, dtype=float)
+        
+        # Enforce 1D shape even for scalar parameters
+        partner = np.atleast_1d(np.asarray(population[i], dtype=float))
+        theta_arr = np.atleast_1d(np.asarray(theta, dtype=float))
 
         U = np.random.rand()
         z = ((self.a - 1.0) * U + 1.0) ** 2 / self.a
@@ -158,6 +170,9 @@ class StretchMove(Proposal):
         log_factor = np.log(z) * (d - 1)
 
         proposal = partner + z * (theta_arr - partner)
+        if proposal.size == 1:
+            return float(proposal[0]), log_factor
+        
         return proposal, log_factor
 
     def update(self, population):
