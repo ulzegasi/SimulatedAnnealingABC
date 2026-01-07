@@ -1,11 +1,11 @@
-# proposals.py  (Python 3.14, typing-simplified)
+# proposals.py  (Python 3.14)
 
 from dataclasses import dataclass
 import numpy as np
 
 
 # -------------------------------------------------------
-# Base proposal type + dispatcher
+# Base proposal type
 # -------------------------------------------------------
 
 class Proposal:
@@ -15,7 +15,7 @@ class Proposal:
         return
 
 
-def update_proposal(proposal, population):
+def update_proposal(proposal: Proposal, population):
     """Update the proposal's internal state (Julia-like interface)."""
     proposal.update(population)
 

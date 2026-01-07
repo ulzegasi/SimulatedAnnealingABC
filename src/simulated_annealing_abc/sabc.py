@@ -1,4 +1,4 @@
-# simulated_annealing_abc.py (Python 3.14)
+# simulated_annealing_abc (Python 3.14)
 
 import math
 import warnings
@@ -10,6 +10,10 @@ from typing import TextIO
 import numpy as np
 from scipy.optimize import root_scalar
 
+# Try to enable tqdm progress bars; fall back to a plain range iterator
+# if tqdm is not available.
+# NOTE 1: tqdm is a Python library that displays progress bars for loops.
+# NOTE 2: The name comes from the Arabic taqaddum (تقدّم), meaning “progress”
 try:
     from tqdm import trange
     _use_tqdm = True
@@ -18,7 +22,13 @@ except ImportError:
     _use_tqdm = False
 
 from simulated_annealing_abc.cdf_estimators import build_cdf
-from simulated_annealing_abc.proposals import Proposal, DifferentialEvolution, update_proposal
+from simulated_annealing_abc.proposals import (
+    Proposal,
+    DifferentialEvolution,
+    RandomWalk,
+    StretchMove,
+    update_proposal,
+)
 
 
 # -------------------------------------------
@@ -59,7 +69,7 @@ class SABCResult:
 # Update a single epsilon. 
 # See eq(31) in Albert et al., Statistics and Computing 25, 2015
 def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
-    if u_bar <= np.finfo(float).eps:
+    if u_bar <= 1e-12:
         return np.array([0.0], dtype=float)
 
     f = lambda eps: eps**2 + v*eps**1.5 - u_bar**2
@@ -76,6 +86,7 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 
     n_stats = u.shape[1]
     u_bar = np.mean(u, axis=0) # mean over particles (vector of size n_stats)
+    u_bar = np.maximum(u_bar, 1e-12)
 
     cn = math.factorial(2 * n_stats + 2) / (
         math.factorial(n_stats + 1) * math.factorial(n_stats + 2)
@@ -85,9 +96,6 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 
     for i in range(n_stats):
         u_bar_i = u_bar[i]
-        if u_bar_i <= np.finfo(float).eps:
-            raise ZeroDivisionError(f"Mean u for statistic {i} too small.")
-
         q = u_bar / u_bar_i
         num = 1.0 + np.sum(q ** (n_stats / 2))
         den = cn * (n_stats + 1) * (u_bar_i ** (1 + n_stats / 2)) * np.prod(q)
@@ -116,6 +124,7 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 def resample_population(population: list, u: np.ndarray, delta: float):
     n_particles = len(population)
     u_bar = np.mean(u, axis=0) # mean over particles (vector of size n_stats)
+    u_bar = np.maximum(u_bar, 1e-12)   # avoid division by ~0
 
     w = np.exp(-np.sum(u * (delta / u_bar), axis=1))
     w_sum = np.sum(w)
@@ -149,7 +158,14 @@ def _check_prior(prior):
 # -------------------------------------------
             
 def is_logging(stream: TextIO) -> bool:
-    """True if stream is not an interactive terminal (i.e., redirected/logged)."""
+    """
+    True if stream is not an interactive terminal (i.e., redirected/logged).
+    On a cluster this function returns True, meaning “we are logging / not interactive”.
+    Then: 
+    1) show_progressbar will be set to False
+    2) tqdm will be disabled
+    3) only occasional checkpoint messages will appear in the logs
+    """
     return not stream.isatty()
 
 # -------------------------------------------
@@ -275,6 +291,7 @@ def update_population(
     
     _check_prior(prior)
 
+    # Check if logging to stderr (TRUE on cluster -> disable progress bar)
     logging_stderr = is_logging(sys.stderr)
     if show_progressbar is None:
         show_progressbar = not logging_stderr
@@ -283,13 +300,19 @@ def update_population(
         show_checkpoint = 100 if logging_stderr else float("inf")
 
     # ---------------------
-    # Copy arrays that will be modified locally (population, u, rho), 
-    # but keep a single evolving 'state' object that tracks histories/counters.
-    
+    # Extract variables from population_state for easier access
+    # Updates inside the loop will mutate the original objects in population_state
+
     state = population_state.state
-    population = list(population_state.population)
-    u = np.array(population_state.u, copy=True)
-    rho = np.array(population_state.rho, copy=True)
+    population = population_state.population
+    u = population_state.u
+    rho = population_state.rho
+    # population, u, rho and 
+    # population_state.population, population_state.u, population_state.rho
+    # refer to the same objects in memory, respectively. 
+    # Any in-place modification (e.g., population[i] = ...) affects both. Similarly for u and rho.
+    # BE CAREFUL: Resampling will rebind the local names 'population' and 'u' to new objects 
+    # We will need to reattach them (SEE BELOW)
     n_particles = len(population)
     n_stats = u.shape[1]
     
@@ -315,9 +338,7 @@ def update_population(
     if n_population_updates == 0:
         warnings.warn("n_simulation too small to perform any population update.", RuntimeWarning)
         return population_state
-    n_updates = n_population_updates * n_particles   # total particle updates / f_dist calls
-    last_checkpoint_epsilon = 0.0                    # or 0, depending on your epsilon type
-
+    
     # ---------------------
     # To estimate ETA
     
@@ -389,6 +410,10 @@ def update_population(
         
         if state.n_accept >= (state.n_resampling + 1) * resample:
             population, u, ess = resample_population(population, u, delta)
+            # Local names 'population' and 'u' now refer to new objects created by resampling
+            # We must explicitly REATTACH the new objects to the population_state
+            population_state.population = population
+            population_state.u = u
             state.n_resampling += 1
 
         # ---------------------
@@ -407,7 +432,7 @@ def update_population(
         state.n_population_updates += 1
         state.n_simulation += n_particles
 
-        if show_checkpoint and ix % show_checkpoint == 0:
+        if (not show_progressbar) and show_checkpoint and ix % show_checkpoint == 0:
             elapsed = dt.datetime.now() - t_start
             eta = elapsed / ix * (n_population_updates - ix)
             eta_str = str(eta).split(".")[0] if eta.total_seconds() > 1 else "< 1 second"
@@ -416,6 +441,7 @@ def update_population(
                 f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  ETA={eta_str}",
                 flush=True,
             )
+            
         # ---------------------
         # Store histories
         
@@ -424,13 +450,26 @@ def update_population(
             state.u_history.append(np.mean(u, axis=0))
             state.rho_history.append(np.mean(rho, axis=0))
 
+        # ---------------------
+        # Update progress bar if required
+        
         if hasattr(iterator, "set_postfix"):
-            iterator.set_postfix(
-                ε=f"{state.epsilon:.4g}",
-                avg_dist=f"{np.mean(u):.4g}",
-        )
+            if np.size(state.epsilon) == 1:
+                iterator.set_postfix(
+                    eps=f"{float(state.epsilon):.4g}",
+                    avg_dist=f"{np.mean(u):.4g}",
+                )
+            else:
+                iterator.set_postfix(
+                    avg_eps=f"{float(np.mean(state.epsilon)):.4g}",
+                    avg_dist=f"{np.mean(u):.4g}",
+                )
     # END of main loop over population updates
-    
+
+    # In principle there is NO NEED to reassign population, u and rho to the population_state
+    # They are already the same objects.
+    # The following lines are therefore redundant (but cheap)
+    population_state.population = population
     population_state.u = u
     population_state.rho = rho
     
