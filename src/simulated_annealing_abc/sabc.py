@@ -6,7 +6,7 @@ import warnings
 import datetime as dt
 import sys
 from dataclasses import dataclass
-from typing import TextIO
+from typing import TextIO, Callable
 
 import numpy as np
 from scipy.optimize import root_scalar
@@ -46,7 +46,9 @@ class SABCState:
     rho_history: list
     u_history: list
 
-    cdfs_dist_prior: object  # callable from build_cdf
+    # Fixed "prior-distance" reference used to build the CDF mapping
+    rho_prior: np.ndarray  # prior distances computed at initialization from prior samples
+    cdfs_dist_prior: Callable[[np.ndarray], np.ndarray] | None # callable function or None
     # function G in Albert et al., Statistics and Computing 25, 2015
 
     n_simulation: int         # number of simulations
@@ -226,12 +228,13 @@ def initialization(
     
     # ------------------
     # Estimate the cdf of ρ given the prior
-
-    cdfs_dist_prior = build_cdf(rho)
+    
+    rho_prior = rho.copy()
+    cdfs_dist_prior = build_cdf(rho_prior)
     # Transformed distances
-    u = np.empty_like(rho)
+    u = np.empty_like(rho_prior)
     for i in range(n_particles):
-        u[i, :] = cdfs_dist_prior(rho[i, :])
+        u[i, :] = cdfs_dist_prior(rho_prior[i, :])
     
     # ------------------
     # Resampling before setting initial epsilon
@@ -254,6 +257,7 @@ def initialization(
         epsilon_history=[epsilon.copy()],
         rho_history=rho_history,
         u_history=[np.mean(u, axis=0)],
+        rho_prior=rho_prior,
         cdfs_dist_prior=cdfs_dist_prior,
         n_simulation=n_particles,
         # N.B.: we consider only n_particles draws from the prior
@@ -262,7 +266,7 @@ def initialization(
         n_resampling=1,
         n_population_updates=0,
     ) 
-    return SABCResult(population=population, u=u, rho=rho, state=state)
+    return SABCResult(population=population, u=u, rho=rho_prior, state=state)
 
 
 # -------------------------------------------
@@ -316,6 +320,12 @@ def update_population(
     # We will need to reattach them (SEE BELOW)
     n_particles = len(population)
     n_stats = u.shape[1]
+    
+    # ---------------------
+    # Rebuild CDF mapping 
+    # if we are resuming from a serialized checkpoint
+    if state.cdfs_dist_prior is None:
+        state.cdfs_dist_prior = build_cdf(state.rho_prior)
     
     # ---------------------
     # Set up proposal mechanism and 
@@ -473,6 +483,9 @@ def update_population(
     population_state.population = population
     population_state.u = u
     population_state.rho = rho
+    
+    # Make result pickle-safe / restart-friendly (closures don't serialize reliably)
+    state.cdfs_dist_prior = None
     
     info(f"All particles have been updated {n_population_updates} times.")
 
