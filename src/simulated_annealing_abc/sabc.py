@@ -11,12 +11,36 @@ from typing import TextIO, Callable
 import numpy as np
 from scipy.optimize import root_scalar
 
+# ------------------------------------------------------------------
+# Environment detection (terminal / notebook / batch)
+# ------------------------------------------------------------------
+
+def running_in_notebook() -> bool:
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+        if ip is None:
+            return False
+        return ip.__class__.__name__ == "ZMQInteractiveShell"
+    except Exception:
+        return False
+
+def is_interactive() -> bool:
+    # Jupyter notebook => interactive
+    if running_in_notebook():
+        return True
+    # Real terminal => interactive
+    return sys.stderr.isatty() or sys.stdout.isatty()
+
+# ------------------------------------------------------------------
 # Try to enable tqdm progress bars; fall back to a plain range iterator
 # if tqdm is not available.
 # NOTE 1: tqdm is a Python library that displays progress bars for loops.
 # NOTE 2: The name comes from the Arabic taqaddum (تقدّم), meaning “progress”
+# ------------------------------------------------------------------
+
 try:
-    from tqdm import trange
+    from tqdm.auto import trange
     _use_tqdm = True
 except ImportError:
     trange = range
@@ -30,7 +54,6 @@ from simulated_annealing_abc.proposals import (
     StretchMove,
     update_proposal,
 )
-
 
 # -------------------------------------------
 # Result containers
@@ -88,7 +111,7 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
         raise ValueError("u must be 2D (n_particles, n_stats).")
 
     n_stats = u.shape[1]
-    u_bar = np.mean(u, axis=0) # mean over particles (vector of size n_stats)
+    u_bar = np.mean(u, axis=0)  # mean over particles (vector of size n_stats)
     u_bar = np.maximum(u_bar, 1e-12)
 
     cn = math.factorial(2 * n_stats + 2) / (
@@ -98,19 +121,53 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
     epsilon_new = np.empty(n_stats, dtype=float)
 
     for i in range(n_stats):
-        u_bar_i = u_bar[i]
+        u_bar_i = float(u_bar[i])
+
+        # A positive beta root exists only for u_bar_i < 0.5
+        # (as beta -> 0, ratio -> 1/2; as beta -> inf, ratio -> 0).
+        if u_bar_i >= 0.5:
+            u_bar_i = 0.5 - 1e-12
+
         q = u_bar / u_bar_i
         num = 1.0 + np.sum(q ** (n_stats / 2))
         den = cn * (n_stats + 1) * (u_bar_i ** (1 + n_stats / 2)) * np.prod(q)
 
         def g(beta: float) -> float:
-            num_g = 1.0 - math.exp(-beta) * (1.0 + beta)
-            den_g = beta * (1.0 - math.exp(-beta))
-            return num_g / den_g - u_bar_i
+            # For very small beta, use a series expansion to avoid 0/0 cancellation:
+            # ratio = 1/2 - beta/12 + O(beta^2)
+            if beta < 1e-6:
+                return (0.5 - beta / 12.0) - u_bar_i
 
-        x0 = 1.0 / u_bar_i
-        bracket = (max(1e-12, x0 * 0.1), x0 * 10.0)
-        sol = root_scalar(g, bracket=bracket)
+            # Otherwise, stable computation using expm1
+            em1 = math.expm1(-beta)          # e^{-beta} - 1
+            exp_neg = em1 + 1.0              # e^{-beta}
+
+            num_g = 1.0 - exp_neg * (1.0 + beta)
+            den_g = beta * (1.0 - exp_neg)
+
+            return (num_g / den_g) - u_bar_i
+
+        # --- robust bracketing ---
+        a = 1e-6
+        b = max(1.0, 10.0 / u_bar_i)
+
+        fa = g(a)
+        fb = g(b)
+
+        # Expand upper bound until sign change (should happen quickly)
+        k = 0
+        while fa * fb > 0 and k < 60:
+            b *= 2.0
+            fb = g(b)
+            k += 1
+
+        if fa * fb > 0:
+            raise RuntimeError(
+                f"Failed to bracket beta root for stat {i}: "
+                f"u_bar_i={u_bar_i:.6g}, g(a)={fa:.6g}, g(b)={fb:.6g}"
+            )
+
+        sol = root_scalar(g, bracket=(a, b), method="brentq")
         if not sol.converged:
             raise RuntimeError(f"Failed to find root for beta (stat {i}).")
 
@@ -155,21 +212,6 @@ def _check_prior(prior):
                 "prior must provide methods .rvs() and .logpdf(theta). "
                 f"Missing: {name}"
             )
-
-# -------------------------------------------
-# Detect interactive terminal vs. redirected/logged output
-# -------------------------------------------
-            
-def is_logging(stream: TextIO) -> bool:
-    """
-    True if stream is not an interactive terminal (i.e., redirected/logged).
-    On a cluster this function returns True, meaning “we are logging / not interactive”.
-    Then: 
-    1) show_progressbar will be set to False
-    2) tqdm will be disabled
-    3) only occasional checkpoint messages will appear in the logs
-    """
-    return not stream.isatty()
 
 # -------------------------------------------
 # Print messages to stderr
@@ -296,14 +338,16 @@ def update_population(
     
     _check_prior(prior)
 
-    # Check if logging to stderr (TRUE on cluster -> disable progress bar)
-    logging_stderr = is_logging(sys.stderr)
-    if show_progressbar is None:
-        show_progressbar = not logging_stderr
-        
-    if show_checkpoint is None:
-        show_checkpoint = 100 if logging_stderr else float("inf")
+    # ---------------------
+    # Decide interactive vs logging behavior
 
+    interactive = is_interactive()
+
+    if show_progressbar is None:
+        show_progressbar = interactive
+
+    if show_checkpoint is None:
+        show_checkpoint = None if interactive else 100
     # ---------------------
     # Extract variables from population_state for easier access
     # Updates inside the loop will mutate the original objects in population_state
@@ -363,7 +407,6 @@ def update_population(
             1, n_population_updates + 1,
             desc=f"{n_population_updates} population updates:",
             disable=not show_progressbar,
-            file=sys.stderr,
         )
     else:
         iterator = range(1, n_population_updates + 1)
@@ -443,7 +486,7 @@ def update_population(
         state.n_population_updates += 1
         state.n_simulation += n_particles
 
-        if (not show_progressbar) and show_checkpoint and ix % show_checkpoint == 0:
+        if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
             elapsed = dt.datetime.now() - t_start
             eta = elapsed / ix * (n_population_updates - ix)
             eta_str = str(eta).split(".")[0] if eta.total_seconds() > 1 else "< 1 second"

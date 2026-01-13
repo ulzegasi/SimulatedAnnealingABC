@@ -15,7 +15,7 @@ The example mirrors the setup used in `tests.py` and demonstrates:
 ### Problem setup
 
 We consider a simple toy problem where the observed data are generated from a normal distribution with unknown mean and standard deviation.
-Inference is performed on the parameters `(mu, sigma)` using summary statistics (mean and standard deviation).
+Inference is performed on the parameters `(mu, sigma)` using the empirical mean and standard deviation as summary statistics.
 
 ### Requirements for SABC
 
@@ -52,14 +52,14 @@ HERE = Path(__file__).resolve().parent
 # -------------------------
 # Reproducibility
 # -------------------------
-np.random.seed(1111)
+np.random.seed(1822)
 
 # -------------------------
 # True data-generating process
 # -------------------------
-true_mu = 3.0
+true_mu = 10.0
 true_sigma = 15.0
-num_samples = 100
+num_samples = 1000
 
 y_obs = np.random.normal(true_mu, true_sigma, size=num_samples)
 
@@ -112,55 +112,39 @@ def f_dist(theta):
 # SABC parameters
 # -------------------------
 n_particles = 1000
-n_simulation = 5_000_000
+n_simulation = 1_000_000
 v = 1.0
 
 # -------------------------
-# Run: Differential Evolution
+# Run SABC
 # -------------------------
-out_dif = sabc(
+out_1 = sabc(
     f_dist,
     prior,
     n_particles=n_particles,
     n_simulation=n_simulation,
     v=v,
     algorithm="single_eps",
+    show_checkpoint=200,
     proposal=DifferentialEvolution(n_para=2),
 )
 
-save_sabc_result(out_dif, HERE / "test_results" / "out_differential_evolution.pkl")
-
 # -------------------------
-# Run: Stretch Move
+# Use update_population to continue from previous result
 # -------------------------
-out_str = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
+out_2 = update_population(
+    out_1, f_dist, prior,
     n_simulation=n_simulation,
     v=v,
-    algorithm="single_eps",
-    proposal=StretchMove(),
-)
+    show_checkpoint=200,
+    proposal=DifferentialEvolution(n_para=2)
+    )
 
-save_sabc_result(out_str, HERE / "test_results" / "out_stretch_move.pkl")
+save_sabc_result(out_2, HERE / "test_results" / "out.pkl")
 
 # -------------------------
-# Run: Random Walk
+# out_2 = load_sabc_result(HERE / "test_results" / "out.pkl")
 # -------------------------
-out_rnd = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    algorithm="single_eps",
-    proposal=RandomWalk(n_para=2),
-)
-
-save_sabc_result(out_rnd, HERE / "test_results" / "out_random_walk.pkl")
-
-print("All runs completed and saved.")
 ```
 
 ## Notes
