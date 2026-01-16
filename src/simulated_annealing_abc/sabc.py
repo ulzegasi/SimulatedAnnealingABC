@@ -82,7 +82,7 @@ class SABCState:
 
 @dataclass
 class SABCResult:
-    population: list
+    population: np.ndarray # parameter samples
     u: np.ndarray   # transformed distances
     rho: np.ndarray # user-defined distances
     state: SABCState
@@ -181,8 +181,8 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 # Resampling
 # -------------------------------------------
 
-def resample_population(population: list, u: np.ndarray, delta: float):
-    n_particles = len(population)
+def resample_population(population: np.ndarray, u: np.ndarray, rho: np.ndarray, delta: float):
+    n_particles = population.shape[0]
     u_bar = np.mean(u, axis=0) # mean over particles (vector of size n_stats)
     u_bar = np.maximum(u_bar, 1e-12)   # avoid division by ~0
 
@@ -194,11 +194,12 @@ def resample_population(population: list, u: np.ndarray, delta: float):
     p = w / w_sum
     idx = np.random.choice(n_particles, size=n_particles, replace=True, p=p)
 
-    population_resampled = [population[i] for i in idx]
+    population_resampled = population[idx, :]
     u_resampled = u[idx, :]
+    rho_resampled = rho[idx, :]
 
     ess = w_sum**2 / np.sum(w**2)
-    return population_resampled, u_resampled, ess
+    return population_resampled, u_resampled, rho_resampled, ess
 
 
 # -------------------------------------------
@@ -242,31 +243,32 @@ def initialization(
         raise ValueError(f"`n_simulation={n_simulation}` too small for {n_particles} particles.")
 
     info(f"Initialization for '{algorithm}'")
-    # ---------------------
-    # Initialize containers
     
-    theta = prior.rvs()  # take a random sample
-    # generate dummy distances to initialize containers
-    rho_init = np.asarray(f_dist(theta, *args, **kwargs), dtype=float)
-    if rho_init.ndim != 1:
+    # Draw one sample from prior to initialize containers
+    theta0 = np.asarray(prior.rvs(), dtype=float) # take a random sample
+    rho0 = np.asarray(f_dist(theta0, *args, **kwargs), dtype=float) # evaluate distances at theta0
+    if rho0.ndim != 1:
         raise ValueError("f_dist must return a 1D array of distances.")
-    n_stats = rho_init.size
-    rho = np.empty((n_particles, n_stats), dtype=float)
-    population = [None] * n_particles
+    n_para = theta0.size
+    n_stats = rho0.size
     
-    # ------------------
-    # Build prior sample ----> CAN BE PARALLELIZED <----
-
-    for i in range(n_particles):
-        theta = prior.rvs()
+    # Allocate containers
+    population = np.empty((n_particles, n_para), dtype=float)
+    rho = np.empty((n_particles, n_stats), dtype=float)
+    
+    # Store first sample (already computed, why waste it?!)
+    population[0, :] = theta0
+    rho[0, :] = rho0
+     
+    # Fill the rest to build prior sample ----> CAN BE PARALLELIZED <----
+    for i in range(1, n_particles):
+        theta = np.asarray(prior.rvs(), dtype=float)
         rho_i = np.asarray(f_dist(theta, *args, **kwargs), dtype=float)
-        population[i] = theta
+        population[i, :] = theta
         rho[i, :] = rho_i
 
     if np.any(rho < 0):
         raise ValueError("Negative distances are not allowed!")
-
-    rho_history = [np.mean(rho, axis=0)]
     
     # ------------------
     # Estimate the cdf of ρ given the prior
@@ -281,7 +283,10 @@ def initialization(
     # ------------------
     # Resampling before setting initial epsilon
 
-    population, u, ess = resample_population(population, u, delta)
+    population, u, rho_prior, ess = resample_population(population, u, rho_prior, delta)
+    
+    rho_history = [np.mean(rho_prior, axis=0)]     # <-- moved here
+    u_history = [np.mean(u, axis=0)]
 
     if algorithm == "multi_eps":
         epsilon = update_epsilon_multi_eps(u, v)
@@ -298,7 +303,7 @@ def initialization(
         algorithm=algorithm,
         epsilon_history=[epsilon.copy()],
         rho_history=rho_history,
-        u_history=[np.mean(u, axis=0)],
+        u_history=u_history,
         rho_prior=rho_prior,
         cdfs_dist_prior=cdfs_dist_prior,
         n_simulation=n_particles,
@@ -362,7 +367,7 @@ def update_population(
     # Any in-place modification (e.g., population[i] = ...) affects both. Similarly for u and rho.
     # BE CAREFUL: Resampling will rebind the local names 'population' and 'u' to new objects 
     # We will need to reattach them (SEE BELOW)
-    n_particles = len(population)
+    n_particles = population.shape[0]
     n_stats = u.shape[1]
     
     # ---------------------
@@ -376,7 +381,7 @@ def update_population(
     # resampling interval, if not provided
     
     if proposal is None:
-        n_para = np.size(population[0])
+        n_para = population.shape[1]
         proposal = DifferentialEvolution(n_para=n_para)
     if resample is None:
         resample = 2 * n_particles
@@ -418,19 +423,19 @@ def update_population(
     for ix in iterator:
         # Split population indices in two halves
         mid = n_particles // 2
-        batch_1 = range(0, mid)
-        batch_2 = range(mid, n_particles)
+        batch_1 = slice(0, mid)
+        batch_2 = slice(mid, n_particles)
 
         n_accept_tmp = 0
 
         for active, inactive in ((batch_1, batch_2), (batch_2, batch_1)):
             
-            pop_inactive = [population[j] for j in inactive]
+            pop_inactive = population[inactive, :]
 
             # ----> INNER LOOP CAN BE PARALLELIZED <----
-            for i in active:
+            for i in range(active.start, active.stop):
                 # Generate proposal
-                theta_cur = population[i]
+                theta_cur = population[i, :]
                 theta_prop, log_factor = proposal(theta_cur, pop_inactive)
                 # Evaluate log prior at proposed theta
                 lprior_prop = prior.logpdf(theta_prop)
@@ -450,8 +455,8 @@ def update_population(
                         + log_factor
                     )
 
-                if math.log(np.random.rand()) < log_accept_prob:
-                    population[i] = theta_prop
+                if np.log(np.random.rand()) < log_accept_prob:
+                    population[i, :] = theta_prop
                     u[i, :] = u_prop
                     rho[i, :] = rho_prop
                     n_accept_tmp += 1
@@ -463,11 +468,12 @@ def update_population(
         # Resample population if needed
         
         if state.n_accept >= (state.n_resampling + 1) * resample:
-            population, u, ess = resample_population(population, u, delta)
+            population, u, rho, ess = resample_population(population, u, rho, delta)
             # Local names 'population' and 'u' now refer to new objects created by resampling
             # We must explicitly REATTACH the new objects to the population_state
             population_state.population = population
             population_state.u = u
+            population_state.rho = rho
             state.n_resampling += 1
 
         # ---------------------

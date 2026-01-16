@@ -70,7 +70,15 @@ mu_min, mu_max = -10.0, 20.0
 sigma_min, sigma_max = 0.0, 25.0
 
 class Prior:
-    """Independent Uniform prior for (mu, sigma)."""
+    """Independent Uniform prior for (mu, sigma).
+
+    NOTE: IMPORTANT!
+    - rvs() must return a 1D NumPy array of shape (n_parameters,)
+    - even when n_parameters == 1, the return value must have shape (1,)
+        (i.e. do NOT return a scalar)
+    - To enforce this, wrap the result as:
+        np.asarray(value, dtype=float).reshape(-1)
+    """
 
     def rvs(self):
         mu = np.random.uniform(mu_min, mu_max)
