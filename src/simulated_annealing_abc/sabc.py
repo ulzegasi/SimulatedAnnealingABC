@@ -6,7 +6,7 @@ import warnings
 import datetime as dt
 import sys
 from dataclasses import dataclass
-from typing import TextIO, Callable
+from typing import Callable
 
 import numpy as np
 from scipy.optimize import root_scalar
@@ -58,7 +58,6 @@ from simulated_annealing_abc.proposals import (
 # -------------------------------------------
 # Result containers
 # -------------------------------------------
-
 @dataclass
 class SABCState:
     epsilon: np.ndarray # epsilon = temperature
@@ -85,6 +84,7 @@ class SABCResult:
     population: np.ndarray # parameter samples
     u: np.ndarray   # transformed distances
     rho: np.ndarray # user-defined distances
+    logprior: np.ndarray # log prior values
     state: SABCState
 
 
@@ -181,10 +181,14 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 # Resampling
 # -------------------------------------------
 
-def resample_population(population: np.ndarray, u: np.ndarray, rho: np.ndarray, delta: float):
+def resample_population(population: np.ndarray,
+                        u: np.ndarray,
+                        rho: np.ndarray,
+                        logprior: np.ndarray,
+                        delta: float):
     n_particles = population.shape[0]
-    u_bar = np.mean(u, axis=0) # mean over particles (vector of size n_stats)
-    u_bar = np.maximum(u_bar, 1e-12)   # avoid division by ~0
+    u_bar = np.mean(u, axis=0)
+    u_bar = np.maximum(u_bar, 1e-12)
 
     w = np.exp(-np.sum(u * (delta / u_bar), axis=1))
     w_sum = np.sum(w)
@@ -197,10 +201,10 @@ def resample_population(population: np.ndarray, u: np.ndarray, rho: np.ndarray, 
     population_resampled = population[idx, :]
     u_resampled = u[idx, :]
     rho_resampled = rho[idx, :]
+    logprior_resampled = logprior[idx]
 
     ess = w_sum**2 / np.sum(w**2)
-    return population_resampled, u_resampled, rho_resampled, ess
-
+    return population_resampled, u_resampled, rho_resampled, logprior_resampled, ess
 
 # -------------------------------------------
 # Check if prior is valid
@@ -244,6 +248,7 @@ def initialization(
 
     info(f"Initialization for '{algorithm}'")
     
+    # ---------------------
     # Draw one sample from prior to initialize containers
     theta0 = np.asarray(prior.rvs(), dtype=float) # take a random sample
     rho0 = np.asarray(f_dist(theta0, *args, **kwargs), dtype=float) # evaluate distances at theta0
@@ -252,14 +257,17 @@ def initialization(
     n_para = theta0.size
     n_stats = rho0.size
     
+    # ---------------------
     # Allocate containers
     population = np.empty((n_particles, n_para), dtype=float)
     rho = np.empty((n_particles, n_stats), dtype=float)
     
+    # ---------------------
     # Store first sample (already computed, why waste it?!)
     population[0, :] = theta0
     rho[0, :] = rho0
      
+    # ---------------------
     # Fill the rest to build prior sample ----> CAN BE PARALLELIZED <----
     for i in range(1, n_particles):
         theta = np.asarray(prior.rvs(), dtype=float)
@@ -270,9 +278,15 @@ def initialization(
     if np.any(rho < 0):
         raise ValueError("Negative distances are not allowed!")
     
+    # ---------------------
+    # Precompute log prior for current population
+    logprior = np.array(
+        [float(prior.logpdf(population[i, :])) for i in range(n_particles)],
+        dtype=float
+    )
+    
     # ------------------
     # Estimate the cdf of ρ given the prior
-    
     rho_prior = rho.copy()
     cdfs_dist_prior = build_cdf(rho_prior)
     # Transformed distances
@@ -282,8 +296,7 @@ def initialization(
     
     # ------------------
     # Resampling before setting initial epsilon
-
-    population, u, rho_prior, ess = resample_population(population, u, rho_prior, delta)
+    population, u, rho_prior, logprior, ess = resample_population(population, u, rho_prior, logprior, delta)
     
     rho_history = [np.mean(rho_prior, axis=0)]     # <-- moved here
     u_history = [np.mean(u, axis=0)]
@@ -313,7 +326,7 @@ def initialization(
         n_resampling=1,
         n_population_updates=0,
     ) 
-    return SABCResult(population=population, u=u, rho=rho_prior, state=state)
+    return SABCResult(population=population, u=u, rho=rho_prior, logprior=logprior, state=state)
 
 
 # -------------------------------------------
@@ -345,7 +358,6 @@ def update_population(
 
     # ---------------------
     # Decide interactive vs logging behavior
-
     interactive = is_interactive()
 
     if show_progressbar is None:
@@ -353,14 +365,15 @@ def update_population(
 
     if show_checkpoint is None:
         show_checkpoint = None if interactive else 100
+    
     # ---------------------
     # Extract variables from population_state for easier access
     # Updates inside the loop will mutate the original objects in population_state
-
     state = population_state.state
     population = population_state.population
     u = population_state.u
     rho = population_state.rho
+    logprior = population_state.logprior
     # population, u, rho and 
     # population_state.population, population_state.u, population_state.rho
     # refer to the same objects in memory, respectively. 
@@ -378,8 +391,7 @@ def update_population(
     
     # ---------------------
     # Set up proposal mechanism and 
-    # resampling interval, if not provided
-    
+    # resampling interval, if not provided 
     if proposal is None:
         n_para = population.shape[1]
         proposal = DifferentialEvolution(n_para=n_para)
@@ -388,12 +400,10 @@ def update_population(
         
     # ---------------------
     # Estimate jump covariance from current population
-    
     update_proposal(proposal, population)
 
     # ---------------------
     # Each population update requires n_particles simulations
-    
     n_population_updates = n_simulation // n_particles
     if n_population_updates == 0:
         warnings.warn("n_simulation too small to perform any population update.", RuntimeWarning)
@@ -401,12 +411,10 @@ def update_population(
     
     # ---------------------
     # To estimate ETA
-    
     t_start = dt.datetime.now()
     
     # ---------------------
     # Iterator for outer loop (1 -> n_population_updates)
-    
     if _use_tqdm:
         iterator = trange(
             1, n_population_updates + 1,
@@ -419,7 +427,6 @@ def update_population(
     # ---------------------
     # Loop over population updates
     # At each iteration ix all particles are updated
-    
     for ix in iterator:
         # Split population indices in two halves
         mid = n_particles // 2
@@ -438,12 +445,12 @@ def update_population(
                 theta_cur = population[i, :]
                 theta_prop, log_factor = proposal(theta_cur, pop_inactive)
                 # Evaluate log prior at proposed theta
-                lprior_prop = prior.logpdf(theta_prop)
+                lprior_prop = float(prior.logpdf(theta_prop))
                 # Compute acceptance probability    
                 if not np.isfinite(lprior_prop):
                     log_accept_prob = -np.inf
                 else:
-                    lprior_cur = prior.logpdf(theta_cur)
+                    lprior_cur = logprior[i]
                     rho_prop = np.asarray(f_dist(theta_prop, *args, **kwargs), dtype=float)
                     if rho_prop.size != n_stats:
                         raise ValueError("Inconsistent number of statistics in f_dist.")
@@ -459,6 +466,7 @@ def update_population(
                     population[i, :] = theta_prop
                     u[i, :] = u_prop
                     rho[i, :] = rho_prop
+                    logprior[i] = lprior_prop
                     n_accept_tmp += 1
             # END of inner loop over active particles
             
@@ -468,12 +476,13 @@ def update_population(
         # Resample population if needed
         
         if state.n_accept >= (state.n_resampling + 1) * resample:
-            population, u, rho, ess = resample_population(population, u, rho, delta)
+            population, u, rho, logprior, ess = resample_population(population, u, rho, logprior, delta)
             # Local names 'population' and 'u' now refer to new objects created by resampling
             # We must explicitly REATTACH the new objects to the population_state
             population_state.population = population
             population_state.u = u
             population_state.rho = rho
+            population_state.logprior = logprior
             state.n_resampling += 1
 
         # ---------------------
@@ -532,7 +541,9 @@ def update_population(
     population_state.population = population
     population_state.u = u
     population_state.rho = rho
+    population_state.logprior = logprior
     
+    # ---------------------
     # Make result pickle-safe / restart-friendly (closures don't serialize reliably)
     state.cdfs_dist_prior = None
     
