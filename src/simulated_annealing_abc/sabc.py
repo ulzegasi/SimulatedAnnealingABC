@@ -494,8 +494,8 @@ def update_population(
                 u01 = rng.random()  # uniform in (0, 1)
                 if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
                     population[i, :] = theta_prop
-                    u[i, :] = u_prop_buf[:]
-                    rho[i, :] = rho_prop_buf[:]
+                    u[i, :] = u_prop_buf
+                    rho[i, :] = rho_prop_buf
                     logprior[i] = lprior_prop
                     n_accept_tmp += 1
             # END of inner loop over active particles
