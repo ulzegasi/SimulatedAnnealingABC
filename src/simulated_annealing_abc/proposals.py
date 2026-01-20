@@ -34,11 +34,14 @@ class RandomWalk(Proposal):
     """
     beta: float
     Sigma: float | np.ndarray  # scalar variance or covariance matrix
+    rng: np.random.Generator
 
-    def __init__(self, *, beta=0.8, n_para=1):
+    def __init__(self, *, beta=0.8, n_para=1, rng=None):
         if not (0.0 < beta <= 1.0):
             raise ValueError("Mixing parameter `beta` must be between 0 and 1.")
         self.beta = float(beta)
+        self.rng = np.random.default_rng() if rng is None else rng
+        
         if n_para == 1:
             self.Sigma = -1.0
         else:
@@ -50,13 +53,14 @@ class RandomWalk(Proposal):
         theta = np.asarray(theta, dtype=float)
         if theta.ndim != 1:
             raise ValueError("theta must be a 1D array.")
+        rng = self.rng
         
         # 1D case: Sigma is a scalar variance
         if np.isscalar(self.Sigma):
             var = float(self.Sigma)
             if var <= 0.0:
                 raise RuntimeError("RandomWalk Sigma not updated yet.")
-            step = np.random.normal(loc=0.0, scale=np.sqrt(var))
+            step = rng.normal(loc=0.0, scale=np.sqrt(var))
             return np.array([theta[0] + step], dtype=float), log_factor
 
         # nD case: Sigma is a covariance matrix
@@ -66,7 +70,7 @@ class RandomWalk(Proposal):
         d = cov.shape[0]
         if theta.size != d:
             raise ValueError("theta dimension does not match Sigma.")
-        step = np.random.multivariate_normal(mean=np.zeros(d), cov=cov)
+        step = rng.multivariate_normal(mean=np.zeros(d), cov=cov)
         return theta + step, log_factor
 
     def update(self, population: np.ndarray)  -> None:
@@ -101,19 +105,22 @@ class DifferentialEvolution(Proposal):
     """
     gamma0: float
     sigma_gamma: float
+    rng: np.random.Generator
 
-    def __init__(self, *, gamma0=None, n_para=None, sigma_gamma=1e-5):
+    def __init__(self, *, gamma0=None, n_para=None, sigma_gamma=1e-5, rng=None):
         if (gamma0 is None) == (n_para is None):  # Error if both are None or both are provided
             raise ValueError("Provide exactly one of `gamma0` or `n_para`.")
         if gamma0 is None:
             gamma0 = 2.38 / np.sqrt(2.0 * float(n_para))
         self.gamma0 = float(gamma0)
         self.sigma_gamma = float(sigma_gamma)
+        self.rng = np.random.default_rng() if rng is None else rng
 
     def __call__(self, theta: np.ndarray, population: np.ndarray):
         """
         theta: (d,)
         population: (m, d)  (this can be the inactive half view)
+        Returns: (proposal_theta (d,), log_factor (float))
         """
         pop = population
         if pop.ndim != 2:
@@ -123,12 +130,21 @@ class DifferentialEvolution(Proposal):
             raise ValueError("Population must contain at least 2 particles.")
         if theta.ndim != 1 or theta.size != d:
             raise ValueError("theta must be a 1D array of length d.")
+        
+        rng = self.rng
+        
         # pick two distinct partners
-        i1, i2 = np.random.choice(m, size=2, replace=False)
-        theta1 = pop[i1, :]
-        theta2 = pop[i2, :]
+        # draw two distinct integers uniformly without replacement, 
+        # but much faster than np.random.choice(..., replace=False).
+        i1 = rng.integers(m)
+        i2 = rng.integers(m - 1)
+        if i2 >= i1:
+            i2 += 1  # ensures i2 != i1
+        # i1, i2 = np.random.choice(m, size=2, replace=False)
+        theta1 = pop[i1]   # shape (d,)
+        theta2 = pop[i2]   # shape (d,)
 
-        gamma = self.gamma0 * (1.0 + self.sigma_gamma * np.random.randn())
+        gamma = self.gamma0 * (1.0 + self.sigma_gamma * rng.standard_normal())
         log_factor = 0.0
         proposal = theta + gamma * (theta1 - theta2)
         return proposal, log_factor
@@ -140,23 +156,19 @@ class DifferentialEvolution(Proposal):
 # -------------------------------------------------------
 # Stretch Move proposal
 # -------------------------------------------------------
-@dataclass
+@dataclass(init=False)
 class StretchMove(Proposal):
     """
     Stretch move proposal (Goodman & Weare / emcee-style).
-    
-    Parameter
-    ---------
-    a : float
-        Stretch scale parameter. Must be > 1.
-        Common default is a=2.0.
     """
-    a: float = 2.0
+    a: float
+    rng: np.random.Generator
 
-    def __post_init__(self):
-        # Validate parameter
-        if self.a <= 1.0:
+    def __init__(self, *, a: float = 2.0, rng=None):
+        if a <= 1.0:
             raise ValueError("StretchMove parameter 'a' must be > 1.")
+        self.a = float(a)
+        self.rng = np.random.default_rng() if rng is None else rng
     
     def __call__(self, theta: np.ndarray, population: np.ndarray):
         pop = population
@@ -166,13 +178,15 @@ class StretchMove(Proposal):
         if m < 1:
             raise ValueError("Population must not be empty.")
         
+        theta = np.asarray(theta, dtype=float)
         if theta.ndim != 1 or theta.size != d:
             raise ValueError("theta must be a 1D array of length d.")
 
-        i = np.random.randint(0, m)
+        rng = self.rng
+        i = rng.integers(m)
         partner = pop[i, :]
 
-        U = np.random.rand()
+        U = rng.random()
         z = ((self.a - 1.0) * U + 1.0) ** 2 / self.a
 
         log_factor = np.log(z) * (d - 1)

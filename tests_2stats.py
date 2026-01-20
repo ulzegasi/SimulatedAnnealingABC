@@ -36,6 +36,7 @@ from scipy.stats import gaussian_kde
 from pathlib import Path
 from simulated_annealing_abc import (
     sabc,
+    make_f_dist,
     update_population,
     DifferentialEvolution,
     StretchMove,
@@ -85,7 +86,7 @@ plt.grid(True, alpha=0.3)
 plt.show()
 
 # %% [markdown]
-# ### True posterior
+# ### True posterior (known analytical form)
 # ---
 
 # %%
@@ -225,9 +226,18 @@ plt.show()
 class Prior:
     """Independent Uniform prior for (mu, sigma)."""
 
-    def rvs(self):
-        mu = np.random.uniform(mu_min, mu_max)
-        sigma = np.random.uniform(sigma_min, sigma_max)
+    def rvs(self, rng: np.random.Generator | None = None):
+        """
+        Draw a sample from the prior.
+
+        If rng is provided, it is used for reproducibility.
+        Otherwise, falls back to NumPy's default RNG.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+
+        mu = rng.uniform(mu_min, mu_max)
+        sigma = rng.uniform(sigma_min, sigma_max)
         return np.array([mu, sigma], dtype=float)
 
     def logpdf(self, theta):
@@ -242,34 +252,52 @@ prior = Prior()
 
 # %%
 # -------------------------
-# Summary statistics (empirical mu and sigma)
+# Model (simulator) + summary stats (empirical mu and sigma)
 # -------------------------
-def sum_stats(data):
-    stat1 = np.mean(data)
-    stat2 = np.std(data, ddof=0)
-    return np.array([stat1, stat2], dtype=float)
+# NOTE: Simulator and summary statistics functions fill in-place arrays
+# y: observed/simulated data
+# theta: model parameters
+# ss_out: summary statistics output array
 
+def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
+    """
+    Fill y in-place with N(mu, sigma).
+    theta: (2,) = [mu, sigma]
+    y: (num_samples,)
+    """
+    mu = float(theta[0])
+    sigma = float(theta[1])
+    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape[0])  # <- in-place
+
+
+def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
+    """
+    Fill ss_out in-place with summary statistics.
+    ss_out: (2,) = [mean(y), std(y)]
+    """
+    ss_out[0] = np.mean(y)
+    ss_out[1] = np.std(y, ddof=0)
+    
+# function metadata
+stats_fn.n_stats = 2  # inform f_dist about number of stats
 
 # %%
-ss_obs = sum_stats(y_obs)
+# infer n_stats from the function metadata
+n_stats = stats_fn.n_stats
+# compute summary statistics (ss_obs) for the observed data (y_obs)
+ss_obs = np.empty(n_stats, dtype=np.float64)
+stats_fn(y_obs, ss_obs)
 print("Observed summary statistics:", ss_obs)
-n_stats = ss_obs.size
-print("Number of summary statistics:", n_stats)
 
 # %%
-# -------------------------
-# Model + distance
-# -------------------------
-def model(theta):
-    mu, sigma = theta
-    y = np.random.normal(mu, sigma, size=num_samples)
-    return sum_stats(y)
-
-def f_dist(theta):
-    ss = model(theta)
-    rho = np.abs(ss - ss_obs)   # Euclidean in 1D == abs
-    return rho
-
+# build allocation-free f_dist(theta, out=None)
+f_dist = make_f_dist(
+    num_samples=num_samples,
+    ss_obs=ss_obs,
+    simulator=simulator,
+    stats_fn=stats_fn,
+    seed=123,   # optional, for reproducibility of the simulator RNG inside f_dist
+)
 
 # %%
 # -------------------------
@@ -284,6 +312,12 @@ v = 1.0
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+
 # -------------------------
 # Run: Differential Evolution, Single Epsilon
 # -------------------------
@@ -295,7 +329,8 @@ out_dif = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="single_eps",
-    proposal=DifferentialEvolution(n_para=2),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -307,8 +342,9 @@ out_dif_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
-    )    
+    proposal=proposal,
+    rng=rng_alg,
+)
 
 # %%
 # Population (n_particles × n_params)
@@ -546,6 +582,12 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_2stats.pkl")
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+
 # -------------------------
 # Run: Differential Evolution, Multi Epsilon
 # -------------------------
@@ -557,7 +599,8 @@ out_dif_mult = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="multi_eps",
-    proposal=DifferentialEvolution(n_para=2),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -569,7 +612,8 @@ out_dif_mult_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
+    proposal=proposal,
+    rng=rng_alg,
     )    
 
 # %%
@@ -812,6 +856,12 @@ save_sabc_result(out_dif_mult_2, HERE / "test_results" / "out_DE_mult_2stats.pkl
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = RandomWalk(n_para=2, rng=rng_prop)
+
 # -------------------------
 # Run: Random Walk, Single Epsilon
 # -------------------------
@@ -823,7 +873,8 @@ out_rw = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="single_eps",
-    proposal=RandomWalk(n_para=2),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -835,7 +886,8 @@ out_rw_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=RandomWalk(n_para=2)
+    proposal=proposal,
+    rng=rng_alg,
     )    
 
 # %%
@@ -1073,6 +1125,12 @@ save_sabc_result(out_rw_2, HERE / "test_results" / "out_RW_sing_2stats.pkl")
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = RandomWalk(n_para=2, rng=rng_prop)
+
 # -------------------------
 # Run: Random Walk, Multi Epsilon
 # -------------------------
@@ -1084,7 +1142,8 @@ out_rw_mult = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="multi_eps",
-    proposal=RandomWalk(n_para=2),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -1096,7 +1155,8 @@ out_rw_mult_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
+    proposal=proposal,
+    rng=rng_alg,
     )    
 
 # %%
@@ -1333,13 +1393,17 @@ save_sabc_result(out_rw_mult_2, HERE / "test_results" / "out_RW_mult_2stats.pkl"
 # out_rw_mult_2 = load_sabc_result(HERE / "test_results" / "out_RW_mult_2stats.pkl")
 # -------------------------
 
-# %%
-
 # %% [markdown]
 # ### Run SABC (SM, single_eps, 2 stats)
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = StretchMove(rng=rng_prop)
+
 # -------------------------
 # Run: Stretch Move, Single Epsilon
 # -------------------------
@@ -1351,7 +1415,8 @@ out_sm = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="single_eps",
-    proposal=StretchMove(),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -1363,8 +1428,9 @@ out_sm_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=RandomWalk(n_para=2)
-    )    
+    proposal=proposal,
+    rng=rng_alg,
+)    
 
 # %%
 # Population (n_particles × n_params)
@@ -1601,6 +1667,12 @@ save_sabc_result(out_sm_2, HERE / "test_results" / "out_SM_sing_2stats.pkl")
 # ---
 
 # %%
+# To ensure reproducibility
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_prop = np.random.default_rng(22)  # proposal randomness
+
+proposal = StretchMove(rng=rng_prop)
+
 # -------------------------
 # Run: Stretch Move, Multi Epsilon
 # -------------------------
@@ -1612,7 +1684,8 @@ out_sm_mult = sabc(
     v=v,
     show_checkpoint=200,
     algorithm="multi_eps",
-    proposal=StretchMove(),
+    proposal=proposal,
+    rng=rng_alg,
 )
 
 # %%
@@ -1624,7 +1697,8 @@ out_sm_mult_2 = update_population(
     n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
-    proposal=StretchMove()
+    proposal=proposal,
+    rng=rng_alg,
     )    
 
 # %%

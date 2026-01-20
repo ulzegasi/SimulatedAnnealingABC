@@ -14,7 +14,6 @@ from scipy.optimize import root_scalar
 # ------------------------------------------------------------------
 # Environment detection (terminal / notebook / batch)
 # ------------------------------------------------------------------
-
 def running_in_notebook() -> bool:
     try:
         from IPython import get_ipython
@@ -38,7 +37,6 @@ def is_interactive() -> bool:
 # NOTE 1: tqdm is a Python library that displays progress bars for loops.
 # NOTE 2: The name comes from the Arabic taqaddum (تقدّم), meaning “progress”
 # ------------------------------------------------------------------
-
 try:
     from tqdm.auto import trange
     _use_tqdm = True
@@ -91,7 +89,6 @@ class SABCResult:
 # -------------------------------------------
 # Epsilon updates
 # -------------------------------------------
-
 # Update a single epsilon. 
 # See eq(31) in Albert et al., Statistics and Computing 25, 2015
 def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
@@ -180,12 +177,12 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 # -------------------------------------------
 # Resampling
 # -------------------------------------------
-
 def resample_population(population: np.ndarray,
                         u: np.ndarray,
                         rho: np.ndarray,
                         logprior: np.ndarray,
-                        delta: float):
+                        delta: float,
+                        rng: np.random.Generator):
     n_particles = population.shape[0]
     u_bar = np.mean(u, axis=0)
     u_bar = np.maximum(u_bar, 1e-12)
@@ -196,7 +193,7 @@ def resample_population(population: np.ndarray,
         raise RuntimeError("All weights are zero in resample_population.")
 
     p = w / w_sum
-    idx = np.random.choice(n_particles, size=n_particles, replace=True, p=p)
+    idx = rng.choice(n_particles, size=n_particles, replace=True, p=p)
 
     population_resampled = population[idx, :]
     u_resampled = u[idx, :]
@@ -209,15 +206,21 @@ def resample_population(population: np.ndarray,
 # -------------------------------------------
 # Check if prior is valid
 # -------------------------------------------
-
 def _check_prior(prior):
     for name in ("rvs", "logpdf"):
         if not hasattr(prior, name):
             raise TypeError(
                 "prior must provide methods .rvs() and .logpdf(theta). "
-                f"Missing: {name}"
             )
-
+    # verify rvs accepts an rng argument
+    try:
+        _ = prior.rvs(np.random.default_rng(0))
+    except TypeError as e:
+        raise TypeError(
+            "prior.rvs must accept a NumPy Generator: rvs(self, rng). "
+            "Example: theta = prior.rvs(rng)"
+        ) from e
+            
 # -------------------------------------------
 # Print messages to stderr
 # -------------------------------------------
@@ -238,6 +241,8 @@ def initialization(
     v: float = 1.0,
     delta: float = 0.1,
     algorithm: str = "single_eps",
+    rng: np.random.Generator | None = None, 
+    seed: int | None = None,
     **kwargs,
 ) -> SABCResult:
     
@@ -245,13 +250,19 @@ def initialization(
     
     if n_simulation < n_particles:
         raise ValueError(f"`n_simulation={n_simulation}` too small for {n_particles} particles.")
+    
+    if rng is not None and seed is not None:
+        raise ValueError("Provide either rng or seed, not both.")
+    if rng is None:
+        rng = np.random.default_rng(seed)
 
     info(f"Initialization for '{algorithm}'")
     
     # ---------------------
     # Draw one sample from prior to initialize containers
-    theta0 = np.asarray(prior.rvs(), dtype=float) # take a random sample
-    rho0 = np.asarray(f_dist(theta0, *args, **kwargs), dtype=float) # evaluate distances at theta0
+    theta0 = np.asarray(prior.rvs(rng), dtype=float) # take a random sample
+    rho0 = f_dist(theta0, *args, **kwargs)
+    rho0 = np.asarray(rho0, dtype=np.float64).reshape(-1)
     if rho0.ndim != 1:
         raise ValueError("f_dist must return a 1D array of distances.")
     n_para = theta0.size
@@ -270,10 +281,10 @@ def initialization(
     # ---------------------
     # Fill the rest to build prior sample ----> CAN BE PARALLELIZED <----
     for i in range(1, n_particles):
-        theta = np.asarray(prior.rvs(), dtype=float)
-        rho_i = np.asarray(f_dist(theta, *args, **kwargs), dtype=float)
+        theta = np.asarray(prior.rvs(rng), dtype=float)
+        rho_i = f_dist(theta, *args, **kwargs)
         population[i, :] = theta
-        rho[i, :] = rho_i
+        rho[i, :] = np.asarray(rho_i, dtype=np.float64).reshape(-1)
 
     if np.any(rho < 0):
         raise ValueError("Negative distances are not allowed!")
@@ -296,7 +307,7 @@ def initialization(
     
     # ------------------
     # Resampling before setting initial epsilon
-    population, u, rho_prior, logprior, ess = resample_population(population, u, rho_prior, logprior, delta)
+    population, u, rho_prior, logprior, ess = resample_population(population, u, rho_prior, logprior, delta, rng)
     
     rho_history = [np.mean(rho_prior, axis=0)]     # <-- moved here
     u_history = [np.mean(u, axis=0)]
@@ -346,6 +357,8 @@ def update_population(
     checkpoint_history: int = 1,
     show_progressbar: bool | None = None,
     show_checkpoint: float | int | None = None,
+    rng: np.random.Generator | None = None, 
+    seed: int | None = None, 
     **kwargs,
 ) -> SABCResult:
     
@@ -390,11 +403,18 @@ def update_population(
         state.cdfs_dist_prior = build_cdf(state.rho_prior)
     
     # ---------------------
+    # Dedicated RNG for accept/reject and any local randomness
+    if rng is not None and seed is not None:
+        raise ValueError("Provide either rng or seed, not both.")
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    
+    # ---------------------
     # Set up proposal mechanism and 
     # resampling interval, if not provided 
     if proposal is None:
         n_para = population.shape[1]
-        proposal = DifferentialEvolution(n_para=n_para)
+        proposal = DifferentialEvolution(n_para=n_para, rng=rng)
     if resample is None:
         resample = 2 * n_particles
         
@@ -423,11 +443,40 @@ def update_population(
         )
     else:
         iterator = range(1, n_population_updates + 1)
+        
+    # ---------------------
+    # --- TEMPORARY timers (seconds) 
+    # for profiling purposes
+    # Remove or comment out when not needed
+    # ---------------------
+    import time
+    t_total_inner = 0.0
+    t_prop = 0.0
+    t_logpdf = 0.0
+    t_fdist = 0.0
+    t_cdf = 0.0
+    t_accept_math = 0.0
+    t_writeback = 0.0
+
+    n_prop = 0
+    n_logpdf = 0
+    n_fdist = 0
+    n_cdf = 0
+    n_accept_math = 0
+    n_writeback = 0
+    
+    # ---------------------
+    # Buffers to avoid repeated allocations
+    rho_prop_buf = np.empty(n_stats, dtype=np.float64)
+    u_prop_buf   = np.empty(n_stats, dtype=np.float64)
 
     # ---------------------
     # Loop over population updates
     # At each iteration ix all particles are updated
     for ix in iterator:
+
+        inv_epsilon = 1.0 / state.epsilon  # used later in acceptance probability
+
         # Split population indices in two halves
         mid = n_particles // 2
         batch_1 = slice(0, mid)
@@ -441,33 +490,94 @@ def update_population(
 
             # ----> INNER LOOP CAN BE PARALLELIZED <----
             for i in range(active.start, active.stop):
+                
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                t0_inner = time.perf_counter()
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                
                 # Generate proposal
                 theta_cur = population[i, :]
+                
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                t0 = time.perf_counter()
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                
                 theta_prop, log_factor = proposal(theta_cur, pop_inactive)
+                
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                t_prop += time.perf_counter() - t0
+                n_prop += 1
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                t0 = time.perf_counter()
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                
                 # Evaluate log prior at proposed theta
                 lprior_prop = float(prior.logpdf(theta_prop))
+                
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                t_logpdf += time.perf_counter() - t0
+                n_logpdf += 1
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                
                 # Compute acceptance probability    
                 if not np.isfinite(lprior_prop):
                     log_accept_prob = -np.inf
                 else:
                     lprior_cur = logprior[i]
-                    rho_prop = np.asarray(f_dist(theta_prop, *args, **kwargs), dtype=float)
-                    if rho_prop.size != n_stats:
-                        raise ValueError("Inconsistent number of statistics in f_dist.")
-                    u_prop = state.cdfs_dist_prior(rho_prop)
+                    
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t0 = time.perf_counter()
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                    
+                    f_dist(theta_prop, out=rho_prop_buf)
+                    
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t_fdist += time.perf_counter() - t0
+                    n_fdist += 1
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                    
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t0 = time.perf_counter()
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                    state.cdfs_dist_prior(rho_prop_buf, out=u_prop_buf)
+                    
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t_cdf += time.perf_counter() - t0
+                    n_cdf += 1
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t0 = time.perf_counter()
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                    
                     log_accept_prob = (
                         lprior_prop - lprior_cur
-                        + np.sum((u[i, :] - u_prop) / state.epsilon)
+                        + np.sum((u[i, :] - u_prop_buf) * inv_epsilon)
                         + log_factor
                     )
+                    
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                    t_accept_math += time.perf_counter() - t0
+                    n_accept_math += 1
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-                if np.log(np.random.rand()) < log_accept_prob:
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                t0 = time.perf_counter()
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+                u01 = rng.random()  # uniform in (0, 1)
+                if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
                     population[i, :] = theta_prop
-                    u[i, :] = u_prop
-                    rho[i, :] = rho_prop
+                    u[i, :] = u_prop_buf[:]
+                    rho[i, :] = rho_prop_buf[:]
                     logprior[i] = lprior_prop
                     n_accept_tmp += 1
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
+                t_writeback += time.perf_counter() - t0
+                n_writeback += 1
+                t_total_inner += time.perf_counter() - t0_inner
+                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
             # END of inner loop over active particles
             
         state.n_accept += n_accept_tmp # careful here, avoid race conditions when parallelizing
@@ -476,7 +586,7 @@ def update_population(
         # Resample population if needed
         
         if state.n_accept >= (state.n_resampling + 1) * resample:
-            population, u, rho, logprior, ess = resample_population(population, u, rho, logprior, delta)
+            population, u, rho, logprior, ess = resample_population(population, u, rho, logprior, delta, rng)
             # Local names 'population' and 'u' now refer to new objects created by resampling
             # We must explicitly REATTACH the new objects to the population_state
             population_state.population = population
@@ -534,6 +644,18 @@ def update_population(
                     avg_dist=f"{np.mean(u):.4g}",
                 )
     # END of main loop over population updates
+    
+    # ------------------------------------------------------------
+    # Print a timing summary (put this once, after the whole loop)
+    # ------------------------------------------------------------
+    print("\n[TIMING] Inner-loop breakdown (wall time):")
+    print(f"  total inner loop:   {t_total_inner:9.3f} s")
+    print(f"  proposal:           {t_prop:9.3f} s  ({(t_prop/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_prop}")
+    print(f"  prior.logpdf:       {t_logpdf:9.3f} s  ({(t_logpdf/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_logpdf}")
+    print(f"  f_dist:             {t_fdist:9.3f} s  ({(t_fdist/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_fdist}")
+    print(f"  cdf(rho):           {t_cdf:9.3f} s  ({(t_cdf/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_cdf}")
+    print(f"  accept math:        {t_accept_math:9.3f} s  ({(t_accept_math/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_accept_math}")
+    print(f"  accept+writeback:   {t_writeback:9.3f} s  ({(t_writeback/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_writeback}")
 
     # In principle there is NO NEED to reassign population, u and rho to the population_state
     # They are already the same objects.
@@ -570,12 +692,17 @@ def sabc(
     checkpoint_history: int = 1,
     show_progressbar: bool | None = None,
     show_checkpoint: float | int | None = None,
+    seed: int | None = None,
+    rng: np.random.Generator | None = None,
     **kwargs,
 ) -> SABCResult:
     
     if algorithm not in ("single_eps", "multi_eps"):
         raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
 
+    if rng is None:
+        rng = np.random.default_rng(seed)
+        
     # ---------------------
     # Initialization
         
@@ -585,6 +712,7 @@ def sabc(
         n_simulation=n_simulation,
         v=v, delta=delta,
         algorithm=algorithm,
+        rng=rng,
         **kwargs,
     )
     
@@ -604,5 +732,6 @@ def sabc(
         checkpoint_history=checkpoint_history,
         show_progressbar=show_progressbar,
         show_checkpoint=show_checkpoint,
+        rng=rng,
         **kwargs,
     )
