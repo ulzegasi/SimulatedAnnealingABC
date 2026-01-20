@@ -443,27 +443,6 @@ def update_population(
         )
     else:
         iterator = range(1, n_population_updates + 1)
-        
-    # ---------------------
-    # --- TEMPORARY timers (seconds) 
-    # for profiling purposes
-    # Remove or comment out when not needed
-    # ---------------------
-    import time
-    t_total_inner = 0.0
-    t_prop = 0.0
-    t_logpdf = 0.0
-    t_fdist = 0.0
-    t_cdf = 0.0
-    t_accept_math = 0.0
-    t_writeback = 0.0
-
-    n_prop = 0
-    n_logpdf = 0
-    n_fdist = 0
-    n_cdf = 0
-    n_accept_math = 0
-    n_writeback = 0
     
     # ---------------------
     # Buffers to avoid repeated allocations
@@ -491,35 +470,12 @@ def update_population(
             # ----> INNER LOOP CAN BE PARALLELIZED <----
             for i in range(active.start, active.stop):
                 
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                t0_inner = time.perf_counter()
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                
                 # Generate proposal
                 theta_cur = population[i, :]
-                
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                t0 = time.perf_counter()
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                
                 theta_prop, log_factor = proposal(theta_cur, pop_inactive)
-                
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                t_prop += time.perf_counter() - t0
-                n_prop += 1
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                t0 = time.perf_counter()
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
                 
                 # Evaluate log prior at proposed theta
                 lprior_prop = float(prior.logpdf(theta_prop))
-                
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                t_logpdf += time.perf_counter() - t0
-                n_logpdf += 1
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
                 
                 # Compute acceptance probability    
                 if not np.isfinite(lprior_prop):
@@ -527,45 +483,14 @@ def update_population(
                 else:
                     lprior_cur = logprior[i]
                     
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t0 = time.perf_counter()
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                    
                     f_dist(theta_prop, out=rho_prop_buf)
-                    
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t_fdist += time.perf_counter() - t0
-                    n_fdist += 1
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                    
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t0 = time.perf_counter()
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
                     state.cdfs_dist_prior(rho_prop_buf, out=u_prop_buf)
-                    
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t_cdf += time.perf_counter() - t0
-                    n_cdf += 1
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t0 = time.perf_counter()
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-                    
                     log_accept_prob = (
                         lprior_prop - lprior_cur
                         + np.sum((u[i, :] - u_prop_buf) * inv_epsilon)
                         + log_factor
                     )
-                    
-                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                    t_accept_math += time.perf_counter() - t0
-                    n_accept_math += 1
-                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                t0 = time.perf_counter()
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
                 u01 = rng.random()  # uniform in (0, 1)
                 if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
                     population[i, :] = theta_prop
@@ -573,11 +498,6 @@ def update_population(
                     rho[i, :] = rho_prop_buf[:]
                     logprior[i] = lprior_prop
                     n_accept_tmp += 1
-                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> 
-                t_writeback += time.perf_counter() - t0
-                n_writeback += 1
-                t_total_inner += time.perf_counter() - t0_inner
-                # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
             # END of inner loop over active particles
             
         state.n_accept += n_accept_tmp # careful here, avoid race conditions when parallelizing
@@ -645,18 +565,6 @@ def update_population(
                 )
     # END of main loop over population updates
     
-    # ------------------------------------------------------------
-    # Print a timing summary (put this once, after the whole loop)
-    # ------------------------------------------------------------
-    print("\n[TIMING] Inner-loop breakdown (wall time):")
-    print(f"  total inner loop:   {t_total_inner:9.3f} s")
-    print(f"  proposal:           {t_prop:9.3f} s  ({(t_prop/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_prop}")
-    print(f"  prior.logpdf:       {t_logpdf:9.3f} s  ({(t_logpdf/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_logpdf}")
-    print(f"  f_dist:             {t_fdist:9.3f} s  ({(t_fdist/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_fdist}")
-    print(f"  cdf(rho):           {t_cdf:9.3f} s  ({(t_cdf/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_cdf}")
-    print(f"  accept math:        {t_accept_math:9.3f} s  ({(t_accept_math/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_accept_math}")
-    print(f"  accept+writeback:   {t_writeback:9.3f} s  ({(t_writeback/t_total_inner*100 if t_total_inner else 0):5.1f}%)  n={n_writeback}")
-
     # In principle there is NO NEED to reassign population, u and rho to the population_state
     # They are already the same objects.
     # The following lines are therefore redundant (but cheap)
