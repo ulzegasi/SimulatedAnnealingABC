@@ -29,8 +29,10 @@
 
 # %%
 import numpy as np
+import numba as nb
 import matplotlib.pyplot as plt
 import emcee
+import time
 from scipy.stats import norm
 from scipy.stats import gaussian_kde
 from pathlib import Path
@@ -250,6 +252,9 @@ class Prior:
 # %%
 prior = Prior()
 
+# %% [markdown]
+# We have two options here, the **standard python** version, or the **fast numba-based** version
+
 # %%
 # -------------------------
 # Model (simulator) + summary stats (empirical mu and sigma)
@@ -277,20 +282,55 @@ def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
     """
     ss_out[0] = np.mean(y)
     ss_out[1] = np.std(y, ddof=0)
-    
-# function metadata
-stats_fn.n_stats = 2  # inform f_dist about number of stats
+
 
 # %%
-# infer n_stats from the function metadata
-n_stats = stats_fn.n_stats
+# -------------------------
+# NUMBA simulator + stats
+# -------------------------
+@nb.njit(cache=True)
+def simulator_nb(theta, y):
+    mu = theta[0]
+    sigma = theta[1]
+    tmp = np.random.normal(0.0, 1.0, y.size)  # allocates
+    for i in range(y.size):
+        y[i] = mu + sigma * tmp[i]
+
+@nb.njit(cache=True)
+def stats_fn_nb(y, ss):
+    # mean
+    s = 0.0
+    for i in range(y.size):
+        s += y[i]
+    m = s / y.size
+
+    # std (population)
+    v = 0.0
+    for i in range(y.size):
+        d = y[i] - m
+        v += d * d
+    ss[0] = m
+    ss[1] = np.sqrt(v / y.size)
+
+
+# %%
+# n_stats
+n_stats = 2  # manually set
+
 # compute summary statistics (ss_obs) for the observed data (y_obs)
 ss_obs = np.empty(n_stats, dtype=np.float64)
 stats_fn(y_obs, ss_obs)
 print("Observed summary statistics:", ss_obs)
 
+# do the same using numba stats function
+ss_obs_nb = np.empty(n_stats, dtype=np.float64)
+stats_fn_nb(y_obs, ss_obs_nb)
+print("Observed summary statistics (numba):", ss_obs_nb)
+
 # %%
+# -------------------------
 # build allocation-free f_dist(theta, out=None)
+# -------------------------
 f_dist = make_f_dist(
     num_samples=num_samples,
     ss_obs=ss_obs,
@@ -298,6 +338,24 @@ f_dist = make_f_dist(
     stats_fn=stats_fn,
     seed=123,   # optional, for reproducibility of the simulator RNG inside f_dist
 )
+
+# %%
+# -------------------------
+# Build fast f_dist (numba-based)
+# -------------------------
+f_dist_fast = make_f_dist(
+    num_samples=num_samples,
+    ss_obs=ss_obs,
+    simulator=lambda theta, y, rng: None,  # unused in fast=True mode
+    stats_fn=lambda y, ss: None,           # unused in fast=True mode
+    fast=True,
+    simulator_nb=simulator_nb,
+    stats_fn_nb=stats_fn_nb,
+)
+
+tmp = np.empty(2, dtype=np.float64)
+theta0 = prior.rvs(np.random.default_rng(0))  # any theta
+f_dist_fast(theta0, out=tmp)  # triggers compilation
 
 # %%
 # -------------------------
@@ -332,6 +390,26 @@ out_dif = sabc(
     proposal=proposal,
     rng=rng_alg,
 )
+
+# %%
+# Testing numba version
+
+# rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+# rng_prop = np.random.default_rng(22)  # proposal randomness
+
+# proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+
+# out_dif_nb = sabc(
+#     f_dist_fast,
+#     prior,
+#     n_particles=n_particles,
+#     n_simulation=n_simulation,
+#     v=v,
+#     show_checkpoint=200,
+#     algorithm="single_eps",
+#     proposal=proposal,
+#     rng=rng_alg,
+# )
 
 # %%
 # -------------------------

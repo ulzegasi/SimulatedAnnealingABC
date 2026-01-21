@@ -283,3 +283,59 @@ The algorithm has **three independent sources of randomness**:
    - Each proposal object accepts its own `rng`
 
 For **fully reproducible runs**, all three sources must be fixed explicitly.
+
+---
+
+## Optional Numba Acceleration
+
+`SimulatedAnnealingABC` supports an **optional Numba-accelerated path** for the simulator and summary-statistics computation inside the distance function `f_dist`.
+
+### Why Numba?
+
+The dominant cost in SABC is typically the **simulator + summary statistics**.  
+If these components can be expressed in a Numba-compatible form (no Python objects, no dynamic allocations), they can be compiled with `numba.njit` and executed inside a tight loop.
+
+The standard NumPy implementation remains the **default** and is often already very efficient.  
+Numba acceleration is therefore **optional** and intended for advanced use cases.
+
+---
+
+### Standard (NumPy) mode — default
+
+```python
+f_dist = make_f_dist(
+    num_samples=num_samples,
+    ss_obs=ss_obs,
+    simulator=simulator,      # Python / NumPy
+    stats_fn=stats_fn,        # Python / NumPy
+)
+```
+
+This version:
+
+- Uses NumPy throughout
+- Is fully reproducible
+- Requires no optional dependencies
+
+### Numba-accelerated mode (advanced)
+
+To enable the fast path, provide Numba-compiled versions of the simulator and summary-statistics functions and set fast=True:
+
+```python
+f_dist_fast = make_f_dist(
+    num_samples=num_samples,
+    ss_obs=ss_obs,
+    fast=True,
+    simulator_nb=simulator_nb,   # @numba.njit
+    stats_fn_nb=stats_fn_nb,     # @numba.njit
+)
+```
+
+**Requirements for Numba mode:**
+
+- `simulator_nb(theta, y)` fills `y` in-place
+- `stats_fn_nb(y, ss)` fills `ss` in-place
+- Both functions must be compiled with `@numba.njit`
+- Avoid per-call allocations inside the Numba functions for best performance
+
+If Numba is not installed, attempting to use `fast=True` raises an informative error.
