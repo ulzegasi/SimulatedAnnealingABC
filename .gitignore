@@ -1,6 +1,49 @@
+# --------------------
+# OS-specific files
+# --------------------
 .DS_Store
+
+# --------------------
+# Temporary / scratch files
+# --------------------
 test.py
+.env
+
+# --------------------
+# Python cache / bytecode
+# --------------------
 __pycache__/
 *.pyc
-.env
+
+# --------------------
+# Conda / virtual environments
+# --------------------
+env/
+venv/
+sabc_env/
+
+# --------------------
+# Jupyter / IPython
+# --------------------
+.ipynb_checkpoints/
+.profile_default/
+
+# --------------------
+# Editors / IDEs
+# --------------------
 .vscode/
+.idea/
+
+# --------------------
+# Build / packaging artifacts
+# --------------------
+build/
+dist/
+*.egg-info/
+
+# --------------------
+# (Optional) Testing / coverage
+# --------------------
+.pytest_cache/
+.coverage
+htmlcov/
