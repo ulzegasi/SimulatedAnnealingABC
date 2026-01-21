@@ -2,166 +2,280 @@
 
 Approximate Bayesian Computation (ABC) is a family of simulation-based inference methods, also known as likelihood-free inference. This repository contains simulated-annealing-based ABC algorithms, collectively referred to as SABC methods.
 
-## Example: Simulated Annealing ABC (SABC)
+The package is designed for **performance**, **reproducibility**, and **flexibility**, with a clear separation between:
 
-This section shows a complete, minimal example of how to use the Simulated Annealing ABC (SABC) implementation in this repository.
-The example mirrors the setup used in `tests.py` and demonstrates:
+- a stochastic simulator,
+- user-defined summary statistics and distances,
+- proposal mechanisms (built-in),
+- and the SABC algorithm itself.
 
-- how to define a prior
-- how to define summary statistics, a simulator, and a distance function
-- how to run SABC with different proposal kernels
-- how to save the results to disk for later inspection or continuation
+It supports both **single-ε** and **multi-ε** annealing schemes and is suitable for computationally expensive stochastic models.
 
-### Problem setup
+---
 
-We consider a simple toy problem where the observed data are generated from a normal distribution with unknown mean and standard deviation.
+## Features
+
+- 🚀 **Fast inner loop**
+  - Allocation-free distance evaluation
+  - In-place updates
+  - Precomputed buffers and cached quantities
+- 🎯 **Reproducibility by design**
+  - Independent RNG control for:
+    - simulator / distance function
+    - SABC algorithm (accept–reject, resampling)
+    - proposal mechanisms
+- 🧩 **Modular architecture**
+  - Plug in any simulator and summary statistics
+  - Custom distance metrics (absolute, squared, weighted, …)
+- 🔁 **Multiple proposal mechanisms**
+  - Differential Evolution
+  - Random Walk
+  - Stretch Move
+- 💾 **Restartable runs**
+  - Population updates can be continued from previous results
+
+---
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/ulzegasi/SimulatedAnnealingABC.git
+cd SimulatedAnnealingABC
+```
+
+Create the Conda environment from the provided file:
+
+```bash
+conda env create -f environment.yml
+conda activate sabc_env
+```
+
+**Note**
+The code currently targets Python ≥ 3.14.
+
+## Basic Usage
+
+We consider a simple toy problem where the observed data (y_obs) are generated from a normal distribution with unknown mean and standard deviation.
 Inference is performed on the parameters `(mu, sigma)` using the empirical mean and standard deviation as summary statistics.
 
-### Requirements for SABC
-
-To run SABC, the user must provide:
-
-1. A **prior object** with two methods:
-   - `rvs()` → draw a random parameter vector `theta`
-   - `logpdf(theta)` → return the log-density of the prior at `theta`
-2. A **distance function** `f_dist(theta)` returning a non-negative vector of distances
-3. A proposal kernel (e.g. `DifferentialEvolution`, `StretchMove`, or `RandomWalk`)
-
-### Complete example
-
 ```python
-"""
-Simulated Annealing ABC (SABC) algorithm
-Basic tests / usage example
-"""
-
 import numpy as np
-from pathlib import Path
+import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde
 from simulated_annealing_abc import (
     sabc,
+    make_f_dist,
+    update_population,
     DifferentialEvolution,
     StretchMove,
     RandomWalk,
     save_sabc_result,
     load_sabc_result,
 )
+```
 
-# Path of *this* script
-HERE = Path(__file__).resolve().parent
+### 0. Generate data
 
-# -------------------------
-# Reproducibility
-# -------------------------
-np.random.seed(1822)
-
-# -------------------------
-# True data-generating process
-# -------------------------
+```python
 true_mu = 10.0
 true_sigma = 15.0
-num_samples = 1000
+np.random.seed(1822)
+y_obs = np.random.normal(true_mu, true_sigma, size=1000)
+```
 
-y_obs = np.random.normal(true_mu, true_sigma, size=num_samples)
+### 1. Define a prior
 
-# -------------------------
-# Prior definition
-# -------------------------
+The prior must provide:
+
+- `rvs(rng)` — draw a sample using a NumPy `Generator`
+- `logpdf(theta)` — compute the log-density
+
+```python
 mu_min, mu_max = -10.0, 20.0
 sigma_min, sigma_max = 0.0, 25.0
 
 class Prior:
-    """Independent Uniform prior for (mu, sigma).
-
-    NOTE: IMPORTANT!
-    - rvs() must return a 1D NumPy array of shape (n_parameters,)
-    - even when n_parameters == 1, the return value must have shape (1,)
-        (i.e. do NOT return a scalar)
-    - To enforce this, wrap the result as:
-        np.asarray(value, dtype=float).reshape(-1)
-    """
-
-    def rvs(self):
-        mu = np.random.uniform(mu_min, mu_max)
-        sigma = np.random.uniform(sigma_min, sigma_max)
-        return np.array([mu, sigma], dtype=float)
+    def rvs(self, rng: np.random.Generator | None = None):
+        if rng is None:
+            rng = np.random.default_rng()
+        mu = rng.uniform(mu_min, mu_max)
+        sigma = rng.uniform(sigma_min, sigma_max)
+        return np.array([mu, sigma])
 
     def logpdf(self, theta):
         mu, sigma = theta
-        if (mu_min <= mu <= mu_max) and (sigma_min <= sigma <= sigma_max):
+        if mu_min <= mu <= mu_max and sigma_min <= sigma <= sigma_max:
             return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
         return -np.inf
 
 prior = Prior()
-
-# -------------------------
-# Summary statistics
-# -------------------------
-def sum_stats(data):
-    stat1 = np.mean(data)
-    stat2 = np.std(data, ddof=0)
-    return np.array([stat1, stat2], dtype=float)
-
-ss_obs = sum_stats(y_obs)
-
-# -------------------------
-# Model + distance
-# -------------------------
-def model(theta):
-    mu, sigma = theta
-    y = np.random.normal(mu, sigma, size=num_samples)
-    return sum_stats(y)
-
-def f_dist(theta):
-    ss = model(theta)
-    rho = np.abs(ss - ss_obs)   # Euclidean distance per statistic
-    return rho
-
-# -------------------------
-# SABC parameters
-# -------------------------
-n_particles = 1000
-n_simulation = 1_000_000
-v = 1.0
-
-# -------------------------
-# Run SABC
-# -------------------------
-out_1 = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    algorithm="single_eps",
-    show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2),
-)
-
-# -------------------------
-# Use update_population to continue from previous result
-# -------------------------
-out_2 = update_population(
-    out_1, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
-    )
-
-save_sabc_result(out_2, HERE / "test_results" / "out.pkl")
-
-# -------------------------
-# out_2 = load_sabc_result(HERE / "test_results" / "out.pkl")
-# -------------------------
 ```
 
-## Notes
+### 2. Define simulator and summary statistics
 
-- The prior does **not** need to be a specific class, as long as it provides  
-  `.rvs()` to draw samples and `.logpdf(theta)` to evaluate the log-density.
+```python
+def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
+    mu = float(theta[0])
+    sigma = float(theta[1])
+    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape[0])  # <- in-place
 
-- The distance function must return a **vector of non-negative distances**  
-  (one entry per summary statistic).
+def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
+    ss_out[0] = np.mean(y)
+    ss_out[1] = np.std(y, ddof=0)
 
-- Results are stored using Python `pickle` and can be reloaded with  
-  `load_sabc_result`.
+# function metadata:
+stats_fn.n_stats = 2
+```
+
+Compute summary statistics (ss_obs) for given observed data (y_obs)
+
+```python
+n_stats = stats_fn.n_stats # infer n_stats from the function metadata
+ss_obs = np.empty(n_stats, dtype=np.float64)
+stats_fn(y_obs, ss_obs)
+```
+
+### 3. Build the distance function
+
+```python
+f_dist = make_f_dist(
+    num_samples=1000,
+    ss_obs=ss_obs,
+    simulator=simulator,
+    stats_fn=stats_fn,
+    seed=123,          # simulator-level randomness
+    distance="abs",    # distance per statistic: abs(ss_sim-ss_obs)
+)
+```
+
+Available distances: "abs", "sq", "weighted_sq". Default: "abs".
+
+### 4. Run SABC
+
+```python
+rng_alg  = np.random.default_rng(18)
+rng_prop = np.random.default_rng(22)
+
+proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+
+result = sabc(
+    f_dist,
+    prior,
+    n_particles=1000,
+    n_simulation=1_000_000,
+    show_checkpoint=500,
+    algorithm="single_eps", # or "multi_eps"
+    proposal=proposal,
+    rng=rng_alg,
+)
+```
+
+### 5. Use update_population to continue from previous result
+
+```python
+result_2 = update_population(
+    result,
+    f_dist,
+    prior,
+    n_simulation=1_000_000,
+    show_checkpoint=500,
+    proposal=proposal,
+    rng=rng_alg,
+)
+```
+
+### 6. Get/Plot results
+
+Extract posterior sample (population) and trajectories for temperature (epsilon), distances (rho) and modified distances (u).
+
+```python
+# Population (n_particles × n_params)
+pop = np.column_stack(result_2.population)
+mu_post = pop[0, :]
+sigma_post = pop[1, :]
+# Epsilon trajectory
+eps = np.column_stack(result_2.state.epsilon_history)
+# Mean rho trajectory
+rho = np.column_stack(result_2.state.rho_history)
+# Mean u trajectory
+u = np.column_stack(result_2.state.u_history)
+```
+
+Plot posterior sample.
+
+```python
+values = np.vstack([mu_post, sigma_post])
+kde = gaussian_kde(values)
+# --- Grid (manual zoom region) ---
+mu_lims = (7, 11)
+sigma_lims = (13, 17)       
+mu_grid = np.linspace(mu_lims[0], mu_lims[1], 250)
+sig_grid = np.linspace(sigma_lims[0], sigma_lims[1], 250)
+MU, SIG = np.meshgrid(mu_grid, sig_grid)
+# --- Evaluate density ---
+positions = np.vstack([MU.ravel(), SIG.ravel()])
+Z = kde(positions).reshape(MU.shape)
+# --- Plot ---
+plt.figure(figsize=(6, 5))
+plt.grid(True, alpha=0.3, zorder=0)
+# --- Shaded contours (grayscale) ---
+n_levels = 10
+cf = plt.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
+# --- Contour lines ---
+plt.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
+# --- True parameters ---
+plt.scatter(
+    true_mu,
+    true_sigma,
+    c="red",
+    s=90,
+    linewidths=3.0,
+    marker="x",
+    zorder=3,
+    label="True value"
+)
+
+plt.xlim(mu_lims)
+plt.ylim(sigma_lims)
+plt.xlabel(r"$\mu$")
+plt.ylabel(r"$\sigma$")
+plt.colorbar(cf, label="Posterior density")
+plt.legend()
+plt.show()
+```
+
+![SABC posterior](figures/sabc_posterior.png)
+
+### 7. Save results
+
+The function **save_sabc_result()** saves the full SABC result to disk using Python’s **pickle** serialization.
+
+```python
+save_sabc_result(result_2, [...some path...] / "result_2.pkl")
+```
+
+Saved results can be loaded using **load_sabc_result()**
+
+```python
+loaded_result = load_sabc_result([...some path...] / "result_2.pkl")
+```
+
+## Reproducibility
+
+The algorithm has **three independent sources of randomness**:
+
+1. **Simulator / distance function**
+   - Randomness from the stochastic forward model used inside `f_dist`
+   - Controlled via the `seed` argument in `make_f_dist`
+
+2. **SABC algorithm**
+   - Accept/reject decisions and population resampling
+   - Controlled via `rng` or `seed` passed to `sabc` / `update_population`
+
+3. **Proposal mechanism**
+   - Randomness used to generate parameter proposals
+   - Each proposal object accepts its own `rng`
+
+For **fully reproducible runs**, all three sources must be fixed explicitly.
