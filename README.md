@@ -55,6 +55,8 @@ conda activate sabc_env
 **Note**
 The code currently targets Python ≥ 3.14.
 
+---
+
 ## Basic Usage
 
 We consider a simple toy problem where the observed data (y_obs) are generated from a normal distribution with unknown mean and standard deviation.
@@ -261,6 +263,8 @@ Saved results can be loaded using **load_sabc_result()**
 ```python
 loaded_result = load_sabc_result([...some path...] / "result_2.pkl")
 ```
+
+---
 
 ## Reproducibility
 
