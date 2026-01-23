@@ -2,36 +2,40 @@
 
 Approximate Bayesian Computation (ABC) is a family of simulation-based inference methods, also known as likelihood-free inference. This repository contains simulated-annealing-based ABC algorithms, collectively referred to as SABC methods.
 
-The package is designed for **performance**, **reproducibility**, and **flexibility**, with a clear separation between:
+The package includes:
 
-- a stochastic simulator,
-- user-defined summary statistics and distances,
 - proposal mechanisms (built-in),
-- and the SABC algorithm itself.
+- the SABC algorithm itself,
 
-It supports both **single-ε** and **multi-ε** annealing schemes and is suitable for computationally expensive stochastic models.
+and requires (user-defined):
+
+- summary statistics
+- a metric (distance),
+- and a stochastic simulator.
+
+The SABC algorithm supports both **single-ε** and **multi-ε** annealing schemes and is suitable for computationally expensive stochastic models.
 
 ---
 
 ## Features
 
-- 🚀 **Fast inner loop**
+- **Fast inner loop**
   - Allocation-free distance evaluation
   - In-place updates
   - Precomputed buffers and cached quantities
-- 🎯 **Reproducibility by design**
+- **Reproducibility by design**
   - Independent RNG control for:
     - simulator / distance function
     - SABC algorithm (accept–reject, resampling)
     - proposal mechanisms
-- 🧩 **Modular architecture**
+- **Modular architecture**
   - Plug in any simulator and summary statistics
   - Custom distance metrics (absolute, squared, weighted, …)
-- 🔁 **Multiple proposal mechanisms**
+- **Multiple proposal mechanisms**
   - Differential Evolution
   - Random Walk
   - Stretch Move
-- 💾 **Restartable runs**
+- **Restartable runs**
   - Population updates can be continued from previous results
 
 ---
