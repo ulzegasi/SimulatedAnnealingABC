@@ -1,0 +1,50 @@
+{
+    "image": "buildpack-deps:trixie",
+    "features": {
+        "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+            "packages": "htop,less,man,tree,vim"
+        },
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "upgradePackages": true,
+            "username": "${localEnv:USER}",
+            "userUid": "${localEnv:UID}",
+            "userGid": "${localEnv:GID}"
+        },
+        "ghcr.io/mamba-org/devcontainer-features/micromamba:1": {
+            "version": "latest",
+            "autoActivate": false
+        }
+    },
+    "postCreateCommand": [
+        "bash",
+        "-l",
+        "-c",
+        "./.devcontainer/post_create_command.sh"
+    ],
+    "waitFor": "postCreateCommand",
+    "remoteUser": "${localEnv:USER}",
+    "remoteEnv": {
+        "TZ": "Europe/Zurich", // set proper timezone
+        "WORKSPACE_FOLDER": "${containerWorkspaceFolder}"
+    },
+    "customizations": {
+        // Configure properties specific to VS Code.
+        "vscode": {
+            // Add the IDs of extensions you want installed when the container is created.
+            "extensions": [
+                // "astral-sh.ty",
+                "charliermarsh.ruff",
+                "codezombiech.gitignore",
+                "davidanson.vscode-markdownlint",
+                "joshbolduc.commitlint",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter",
+                "redhat.vscode-yaml",
+                "streetsidesoftware.code-spell-checker",
+                "tamasfe.even-better-toml",
+                "vivaxy.vscode-conventional-commits"
+            ]
+        }
+    }
+}

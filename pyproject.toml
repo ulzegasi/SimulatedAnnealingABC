@@ -1,0 +1,36 @@
+# [tool.pyright]
+# reportMissingImports = true
+# reportMissingTypeStubs = false
+# reportArgumentType = false
+# reportAttributeAccessIssue = false
+# reportCallIssue = false
+# reportIndexIssue = false
+# reportOperatorIssue = false
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+# ruff is less lenient than pylint and does not make any exceptions
+# (for docstrings, strings and comments in particular).
+line-length = 100
+# exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = [
+    "B",  # bugbear
+    "D",  # pydocstyle
+    "E",  # pycodestyle
+    "F",  # pyflakes
+    "I",  # isort
+    "PL", # pylint
+    "RUF", # ruff
+    "S", # bandit
+    "W",  # pycodestyle
+]
+# ignore = [
+#     "D104", # Missing docstring in public package (__init__.py)
+# ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

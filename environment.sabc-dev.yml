@@ -1,0 +1,18 @@
+---
+name: sabc-dev
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14
+  - ipykernel # vscode
+  - ipywidgets # other jupyter func.
+  - rich # nice logging
+  - emcee
+  - numpy
+  - scipy
+  - numba
+  - matplotlib
+  - tqdm
+  - pip:
+    - scalene
