@@ -65,7 +65,7 @@ def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
     if u_bar <= 1e-12:
         return np.array([0.0], dtype=float)
 
-    def f(eps: float, u_bar: float) -> float:
+    def f(eps: float) -> float:
         return eps**2 + v * eps**1.5 - u_bar**2
 
     sol = root_scalar(f, bracket=(0.0, u_bar))
