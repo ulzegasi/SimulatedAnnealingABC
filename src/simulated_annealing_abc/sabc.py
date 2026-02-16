@@ -399,6 +399,7 @@ def update_population(
             stack_level=1,
         )
         return population_state
+    LOG.debug(f"Running {n_population_updates} population updates.")
 
     # ---------------------
     # To estimate ETA
@@ -523,8 +524,8 @@ def update_population(
     state.cdfs_dist_prior = None
 
     LOG.info(
-        f"All particles have been updated {n_population_updates} times. "
-        f"Taking {(time.perf_counter_ns() - t_start) / 1e9:.2f} seconds."
+        f"All particles have been updated {n_population_updates} times "
+        f"in {(time.perf_counter_ns() - t_start) / 1e9:.2f} seconds."
     )
 
     return population_state
