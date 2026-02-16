@@ -5,7 +5,6 @@
 import datetime as dt
 import logging
 import math
-import sys
 import warnings
 from dataclasses import dataclass
 from typing import Callable
@@ -13,52 +12,16 @@ from typing import Callable
 import numpy as np
 from scipy.optimize import root_scalar
 
-LOG = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------------
-# Environment detection (terminal / notebook / batch)
-# ------------------------------------------------------------------
-def running_in_notebook() -> bool:
-    try:
-        from IPython import get_ipython
-
-        ip = get_ipython()
-        if ip is None:
-            return False
-        return ip.__class__.__name__ == "ZMQInteractiveShell"
-    except Exception:
-        return False
-
-
-def is_interactive() -> bool:
-    # Jupyter notebook => interactive
-    if running_in_notebook():
-        return True
-    # Real terminal => interactive
-    return sys.stderr.isatty() or sys.stdout.isatty()
-
-
-# ------------------------------------------------------------------
-# Try to enable tqdm progress bars; fall back to a plain range iterator
-# if tqdm is not available.
-# NOTE 1: tqdm is a Python library that displays progress bars for loops.
-# NOTE 2: The name comes from the Arabic taqaddum (تقدّم), meaning “progress”
-# ------------------------------------------------------------------
-try:
-    from tqdm.auto import trange
-
-    _use_tqdm = True
-except ImportError:
-    trange = range
-    _use_tqdm = False
-
 from simulated_annealing_abc.cdf_estimators import build_cdf
 from simulated_annealing_abc.proposals import (
     DifferentialEvolution,
     Proposal,
     update_proposal,
 )
+
+from .helper import track_progress
+
+LOG = logging.getLogger(__name__)
 
 
 # -------------------------------------------
@@ -261,7 +224,10 @@ def initialization(
     if rng is None:
         rng = np.random.default_rng(seed)
 
-    LOG.info(f"Initialization for '{algorithm}'")
+    LOG.info(
+        f"Initialization for '{algorithm}' "
+        f"with {n_particles} particles and {n_simulation} simulations."
+    )
 
     # ---------------------
     # Draw one sample from prior to initialize containers
@@ -376,15 +342,9 @@ def update_population(
 
     _check_prior(prior)
 
-    # ---------------------
-    # Decide interactive vs logging behavior
-    interactive = is_interactive()
-
-    if show_progressbar is None:
-        show_progressbar = interactive
-
     if show_checkpoint is None:
-        show_checkpoint = None if interactive else 100
+        # show_checkpoint = None if INTERACTIVE_SESSION else 100
+        show_checkpoint = 100
 
     # ---------------------
     # Extract variables from population_state for easier access
@@ -433,24 +393,16 @@ def update_population(
     # Each population update requires n_particles simulations
     n_population_updates = n_simulation // n_particles
     if n_population_updates == 0:
-        warnings.warn("n_simulation too small to perform any population update.", RuntimeWarning)
+        warnings.warn(
+            "n_simulation too small to perform any population update.",
+            RuntimeWarning,
+            stack_level=1,
+        )
         return population_state
 
     # ---------------------
     # To estimate ETA
     t_start = dt.datetime.now()
-
-    # ---------------------
-    # Iterator for outer loop (1 -> n_population_updates)
-    if _use_tqdm:
-        iterator = trange(
-            1,
-            n_population_updates + 1,
-            desc=f"{n_population_updates} population updates:",
-            disable=not show_progressbar,
-        )
-    else:
-        iterator = range(1, n_population_updates + 1)
 
     # ---------------------
     # Buffers to avoid repeated allocations
@@ -460,7 +412,7 @@ def update_population(
     # ---------------------
     # Loop over population updates
     # At each iteration ix all particles are updated
-    for ix in iterator:
+    for ix in track_progress(range(1, n_population_updates + 1), show_progressbar=show_progressbar):
         inv_epsilon = 1.0 / state.epsilon  # used later in acceptance probability
 
         # Split population indices in two halves
@@ -539,7 +491,8 @@ def update_population(
         state.n_population_updates += 1
         state.n_simulation += n_particles
 
-        if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
+        # if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
+        if (show_checkpoint is not None) and ix % show_checkpoint == 0:
             elapsed = dt.datetime.now() - t_start
             eta = elapsed / ix * (n_population_updates - ix)
             eta_str = str(eta).split(".")[0] if eta.total_seconds() > 1 else "< 1 second"
@@ -550,26 +503,11 @@ def update_population(
 
         # ---------------------
         # Store histories
-
         if ix % checkpoint_history == 0:
             state.epsilon_history.append(state.epsilon.copy())
             state.u_history.append(np.mean(u, axis=0))
             state.rho_history.append(np.mean(rho, axis=0))
 
-        # ---------------------
-        # Update progress bar if required
-
-        if hasattr(iterator, "set_postfix"):
-            if np.size(state.epsilon) == 1:
-                iterator.set_postfix(
-                    eps=f"{float(state.epsilon):.4g}",
-                    avg_dist=f"{np.mean(u):.4g}",
-                )
-            else:
-                iterator.set_postfix(
-                    avg_eps=f"{float(np.mean(state.epsilon)):.4g}",
-                    avg_dist=f"{np.mean(u):.4g}",
-                )
     # END of main loop over population updates
 
     # In principle there is NO NEED to reassign population, u and rho to the population_state
@@ -606,7 +544,7 @@ def sabc(
     v: float = 1.0,
     delta: float = 0.1,
     checkpoint_history: int = 1,
-    show_progressbar: bool | None = None,
+    show_progressbar: bool = True,
     show_checkpoint: float | int | None = None,
     seed: int | None = None,
     rng: np.random.Generator | None = None,
