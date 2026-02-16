@@ -44,13 +44,13 @@ def track_progress(iterable, show_progressbar: bool = True) -> Iterable:
         return track(
             iterable,
             description="Running population updates",
-            disable=not show_progressbar,
+            transient=True,
         )
     elif show_progressbar and _has_tqdm:
         return tqdm(
             iterable,
             desc="Running population updates",
-            disable=not show_progressbar,
+            leave=False,
         )
     else:
         LOG.debug("Running population updates without progress bars.")
