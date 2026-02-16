@@ -89,6 +89,21 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
 
     epsilon_new = np.empty(n_stats, dtype=float)
 
+    def g(beta: float, u_bar_i: float) -> float:
+        # For very small beta, use a series expansion to avoid 0/0 cancellation:
+        # ratio = 1/2 - beta/12 + O(beta^2)
+        if beta < 1e-6:
+            return (0.5 - beta / 12.0) - u_bar_i
+
+        # Otherwise, stable computation using expm1
+        em1 = math.expm1(-beta)  # e^{-beta} - 1
+        exp_neg = em1 + 1.0  # e^{-beta}
+
+        num_g = 1.0 - exp_neg * (1.0 + beta)
+        den_g = beta * (1.0 - exp_neg)
+
+        return (num_g / den_g) - u_bar_i
+
     for i in range(n_stats):
         u_bar_i = float(u_bar[i])
 
@@ -101,33 +116,18 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
         num = 1.0 + np.sum(q ** (n_stats / 2))
         den = cn * (n_stats + 1) * (u_bar_i ** (1 + n_stats / 2)) * np.prod(q)
 
-        def g(beta: float) -> float:
-            # For very small beta, use a series expansion to avoid 0/0 cancellation:
-            # ratio = 1/2 - beta/12 + O(beta^2)
-            if beta < 1e-6:
-                return (0.5 - beta / 12.0) - u_bar_i
-
-            # Otherwise, stable computation using expm1
-            em1 = math.expm1(-beta)  # e^{-beta} - 1
-            exp_neg = em1 + 1.0  # e^{-beta}
-
-            num_g = 1.0 - exp_neg * (1.0 + beta)
-            den_g = beta * (1.0 - exp_neg)
-
-            return (num_g / den_g) - u_bar_i
-
         # --- robust bracketing ---
         a = 1e-6
         b = max(1.0, 10.0 / u_bar_i)
 
-        fa = g(a)
-        fb = g(b)
+        fa = g(a, u_bar_i)
+        fb = g(b, u_bar_i)
 
         # Expand upper bound until sign change (should happen quickly)
         k = 0
         while fa * fb > 0 and k < 60:
             b *= 2.0
-            fb = g(b)
+            fb = g(b, u_bar_i)
             k += 1
 
         if fa * fb > 0:
