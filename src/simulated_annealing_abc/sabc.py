@@ -1,10 +1,9 @@
 # sabc.py — core Simulated Annealing ABC algorithm
 # Python 3.14
 
-
-import datetime as dt
 import logging
 import math
+import time
 import warnings
 from dataclasses import dataclass
 from typing import Callable
@@ -402,7 +401,7 @@ def update_population(
 
     # ---------------------
     # To estimate ETA
-    t_start = dt.datetime.now()
+    t_start = time.perf_counter_ns()
 
     # ---------------------
     # Buffers to avoid repeated allocations
@@ -493,9 +492,9 @@ def update_population(
 
         # if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
         if (show_checkpoint is not None) and ix % show_checkpoint == 0:
-            elapsed = dt.datetime.now() - t_start
+            elapsed = (time.perf_counter_ns() - t_start) / 1e9
             eta = elapsed / ix * (n_population_updates - ix)
-            eta_str = str(eta).split(".")[0] if eta.total_seconds() > 1 else "< 1 second"
+            eta_str = f"{eta:.2f} seconds" if eta > 1 else "< 1 second"
             LOG.debug(
                 f"Update {ix}/{n_population_updates}  "
                 f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  ETA={eta_str}",
@@ -522,7 +521,10 @@ def update_population(
     # Make result pickle-safe / restart-friendly (closures don't serialize reliably)
     state.cdfs_dist_prior = None
 
-    LOG.info(f"All particles have been updated {n_population_updates} times.")
+    LOG.info(
+        f"All particles have been updated {n_population_updates} times. "
+        f"Taking {(time.perf_counter_ns() - t_start) / 1e9:.2f} seconds."
+    )
 
     return population_state
 
