@@ -216,7 +216,7 @@ values = np.vstack([mu_post, sigma_post])
 kde = gaussian_kde(values)
 # --- Grid (manual zoom region) ---
 mu_lims = (7, 11)
-sigma_lims = (13, 17)       
+sigma_lims = (13, 17)
 mu_grid = np.linspace(mu_lims[0], mu_lims[1], 250)
 sig_grid = np.linspace(sigma_lims[0], sigma_lims[1], 250)
 MU, SIG = np.meshgrid(mu_grid, sig_grid)
@@ -296,10 +296,12 @@ For **fully reproducible runs**, all three sources must be fixed explicitly.
 
 ### Why Numba?
 
-The dominant cost in SABC is typically the **simulator + summary statistics**.  
+The dominant cost in SABC is typically the **simulator + summary statistics**.
+
 If these components can be expressed in a Numba-compatible form (no Python objects, no dynamic allocations), they can be compiled with `numba.njit` and executed inside a tight loop.
 
-The standard NumPy implementation remains the **default** and is often already very efficient.  
+The standard NumPy implementation remains the **default** and is often already very efficient.
+
 Numba acceleration is therefore **optional** and intended for advanced use cases.
 
 ---

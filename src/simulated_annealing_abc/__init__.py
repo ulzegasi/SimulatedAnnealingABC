@@ -1,43 +1,25 @@
-"""
-simulated_annealing_abc
+"""Simulation-based inference using Simulated Annealing ABC."""
 
-Simulation-based inference using Simulated Annealing ABC.
-"""
-
-# Core algorithm
-from .sabc import sabc, update_population, SABCResult, SABCState
 from .fdist import make_f_dist
-
-# Proposal mechanisms
+from .io import load_sabc_result, save_sabc_result
 from .proposals import (
+    DifferentialEvolution,
     Proposal,
     RandomWalk,
-    DifferentialEvolution,
     StretchMove,
 )
-
-# I/O utilities
-from .io import save_sabc_result, load_sabc_result
+from .sabc import SABCResult, SABCState, sabc, update_population
 
 __all__ = [
-    # main API
-    "sabc",
-    "update_population",
-
-    # result containers
-    "SABCResult",
-    "SABCState",
-
-    # proposals
+    "DifferentialEvolution",
     "Proposal",
     "RandomWalk",
-    "DifferentialEvolution",
+    "SABCResult",
+    "SABCState",
     "StretchMove",
-
-    # persistence
-    "save_sabc_result",
     "load_sabc_result",
-    
-    # f_dist builder
     "make_f_dist",
+    "sabc",
+    "save_sabc_result",
+    "update_population",
 ]
