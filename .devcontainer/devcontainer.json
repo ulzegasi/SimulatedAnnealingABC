@@ -1,7 +1,7 @@
 {
     "image": "buildpack-deps:trixie",
     "features": {
-        "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+        "ghcr.io/devcontainers-extra/features/apt-get-packages:1": {
             "packages": "htop,less,man,tree,vim"
         },
         "ghcr.io/devcontainers/features/common-utils:2": {
@@ -13,7 +13,14 @@
         "ghcr.io/mamba-org/devcontainer-features/micromamba:1": {
             "version": "latest",
             "autoActivate": false
-        }
+        },
+        // "ghcr.io/devcontainer-community/devcontainer-features/opencode.ai:1": {
+        //     "version": "latest"
+        // },
+        // "ghcr.io/devcontainer-community/devcontainer-features/astral.sh-uv:1": {
+        //     "version": "latest",
+        //     "shellautocompletion": true
+        // },
     },
     "postCreateCommand": [
         "bash",

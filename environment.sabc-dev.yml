@@ -8,6 +8,8 @@ dependencies:
   - ipykernel # vscode
   - ipywidgets # other jupyter func.
   - rich # nice logging
+  - nodejs
+  - uv
   - emcee
   - numpy
   - scipy
