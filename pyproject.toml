@@ -1,3 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simulated_annealing_abc"
+version = "0.0.1"
+description = "Simulation-based inference using Simulated Annealing ABC"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
 # [tool.pyright]
 # reportMissingImports = true
 # reportMissingTypeStubs = false
