@@ -492,7 +492,9 @@ def update_population(
         state.n_simulation += n_particles
 
         # if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
-        if (show_checkpoint is not None) and ix % show_checkpoint == 0:
+        if (show_checkpoint is not None) and (
+            ix % show_checkpoint == 0 or ix == n_population_updates
+        ):
             elapsed = (time.perf_counter_ns() - t_start) / 1e9
             eta = elapsed / ix * (n_population_updates - ix)
             eta_str = f"{eta:.2f} seconds" if eta > 1 else "< 1 second"
