@@ -1,12 +1,13 @@
-# fdist.py
+"""fdist.py."""
 
 from typing import Callable, Literal
+
 import numpy as np
 
 DistanceMode = Literal["abs", "sq", "weighted_sq"]
 
 SimulatorFn = Callable[[np.ndarray, np.ndarray, np.random.Generator], None]
-StatsFn     = Callable[[np.ndarray, np.ndarray], None]
+StatsFn = Callable[[np.ndarray, np.ndarray], None]
 
 
 def make_f_dist(
@@ -22,8 +23,7 @@ def make_f_dist(
     simulator_nb=None,
     stats_fn_nb=None,
 ):
-    """
-    Build an allocation-free distance function f_dist(theta, out=None).
+    """Build an allocation-free distance function f_dist(theta, out=None).
 
     Pure NumPy mode (default):
       - simulator(theta, y, rng) fills y in-place
@@ -51,23 +51,27 @@ def make_f_dist(
         if simulator_nb is None or stats_fn_nb is None:
             raise ValueError("fast=True requires simulator_nb and stats_fn_nb.")
         from .fdist_numba import make_f_dist_numba  # local import: optional dependency
+
         return make_f_dist_numba(
             num_samples=num_samples,
             ss_obs=ss_obs,
             simulator_nb=simulator_nb,
             stats_fn_nb=stats_fn_nb,
             distance=distance,
-            weights=w,   # pass validated/canonical weights (or None)
+            weights=w,  # pass validated/canonical weights (or None)
         )
 
     # ---- choose transform once (no branching per call)
     if distance == "abs":
+
         def transform(out: np.ndarray) -> None:
             np.abs(out, out=out)
     elif distance == "sq":
+
         def transform(out: np.ndarray) -> None:
             np.square(out, out=out)
     elif distance == "weighted_sq":
+
         def transform(out: np.ndarray) -> None:
             np.square(out, out=out)
             out *= w

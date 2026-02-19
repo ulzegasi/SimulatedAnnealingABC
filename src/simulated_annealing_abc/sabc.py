@@ -1,5 +1,4 @@
-# sabc.py — core Simulated Annealing ABC algorithm
-# Python 3.14
+"""sabc.py — core Simulated Annealing ABC algorithm."""
 
 import logging
 import math

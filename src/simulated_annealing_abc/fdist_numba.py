@@ -1,5 +1,7 @@
-# fdist_numba.py
+"""fdist_numba.py."""
+
 from typing import Literal
+
 import numpy as np
 
 DistanceMode = Literal["abs", "sq", "weighted_sq"]
@@ -42,6 +44,7 @@ def make_f_dist_numba(
     w_core = w if distance == "weighted_sq" else np.empty(1, dtype=np.float64)
 
     if distance == "abs":
+
         @nb.njit(cache=True)
         def _transform(out, w_in):
             for j in range(out.size):
@@ -49,6 +52,7 @@ def make_f_dist_numba(
                 out[j] = v if v >= 0.0 else -v
 
     elif distance == "sq":
+
         @nb.njit(cache=True)
         def _transform(out, w_in):
             for j in range(out.size):
@@ -56,6 +60,7 @@ def make_f_dist_numba(
                 out[j] = v * v
 
     elif distance == "weighted_sq":
+
         @nb.njit(cache=True)
         def _transform(out, w_in):
             for j in range(out.size):
