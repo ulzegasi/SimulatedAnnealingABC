@@ -1,7 +1,7 @@
 # AGENTS.md
 # Guidance for agentic coding in this repo
 
-This repository is a Python 3.14+ codebase for Simulated Annealing ABC (SABC)
+This repository is a Python 3.10+ codebase for Simulated Annealing ABC (SABC)
 with optional Numba acceleration. There is no formal build system or test
 runner; most validation happens via runnable scripts and notebooks in the
 repository root.
