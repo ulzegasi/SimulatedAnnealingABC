@@ -28,20 +28,19 @@
 # Inference is performed on the parameters `(mu, sigma)` using **3 summary stats**: empirical **mean**, **median**, and **standard deviation**. The **median** is clearly an additional redundant statistic.
 
 # %%
-import numpy as np
-import matplotlib.pyplot as plt
-import emcee
-from scipy.stats import norm
-from scipy.stats import gaussian_kde
 from pathlib import Path
+
+import emcee
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import gaussian_kde, norm
+
 from simulated_annealing_abc import (
-    sabc,
-    update_population,
     DifferentialEvolution,
-    StretchMove,
-    RandomWalk,
+    SABCConfig,
+    sabc,
     save_sabc_result,
-    load_sabc_result,
+    update_population,
 )
 
 # %%
@@ -107,13 +106,15 @@ def log_prior(theta):
         return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
     return -np.inf
 
+
 def log_likelihood(theta, y):
     mu, sigma = theta
     if sigma <= 0:
         return -np.inf
     n = y.size
     # Normal log-likelihood
-    return -n*np.log(sigma) - 0.5*np.sum((y - mu)**2) / (sigma**2)
+    return -n * np.log(sigma) - 0.5 * np.sum((y - mu) ** 2) / (sigma**2)
+
 
 def log_posterior(theta, y):
     lp = log_prior(theta)
@@ -121,16 +122,17 @@ def log_posterior(theta, y):
         return -np.inf
     return lp + log_likelihood(theta, y)
 
+
 # --- MCMC settings ---
 ndim = 2
-nwalkers = 20              # number of walkers
+nwalkers = 20  # number of walkers
 burnin = 10000
-nsteps = 5000              # production steps per walker
+nsteps = 5000  # production steps per walker
 thin = 100
 
 # --- initialize walkers uniformly from the prior ---
 p0 = np.empty((nwalkers, ndim))
-p0[:, 0] = np.random.uniform(mu_min, mu_max, size=nwalkers)       # mu
+p0[:, 0] = np.random.uniform(mu_min, mu_max, size=nwalkers)  # mu
 p0[:, 1] = np.random.uniform(max(sigma_min, 1e-6), sigma_max, size=nwalkers)  # sigma
 
 # --- run MCMC ---
@@ -156,7 +158,7 @@ kde = gaussian_kde(values)
 
 # Grid (manual zoom region)
 mu_lims = (7, 11)
-sigma_lims = (13, 17)       
+sigma_lims = (13, 17)
 mu_grid = np.linspace(mu_lims[0], mu_lims[1], 250)
 sig_grid = np.linspace(sigma_lims[0], sigma_lims[1], 250)
 MU, SIG = np.meshgrid(mu_grid, sig_grid)
@@ -170,37 +172,14 @@ plt.grid(True, alpha=0.3, zorder=0)
 
 # Shaded contours (grayscale)
 n_levels = 10
-cf = plt.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = plt.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
 # Contour lines
-plt.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+plt.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 # True parameters
 plt.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 plt.xlim(mu_lims)
@@ -218,16 +197,17 @@ plt.show()
 # ---
 
 # %%
-# IMPORTANT -> Prior must be defined so that 
-# it can generate samples (with prior.rvs) 
+# IMPORTANT -> Prior must be defined so that
+# it can generate samples (with prior.rvs)
 # and compute logpdf (with prior.logpdf)
+
 
 class Prior:
     """Independent Uniform prior for (mu, sigma)."""
 
-    def rvs(self):
-        mu = np.random.uniform(mu_min, mu_max)
-        sigma = np.random.uniform(sigma_min, sigma_max)
+    def rvs(self, rng: np.random.Generator):
+        mu = rng.uniform(mu_min, mu_max)
+        sigma = rng.uniform(sigma_min, sigma_max)
         return np.array([mu, sigma], dtype=float)
 
     def logpdf(self, theta):
@@ -239,6 +219,7 @@ class Prior:
 
 # %%
 prior = Prior()
+
 
 # %%
 # -------------------------
@@ -257,6 +238,7 @@ print("Observed summary statistics:", ss_obs)
 n_stats = ss_obs.size
 print("Number of summary statistics:", n_stats)
 
+
 # %%
 # -------------------------
 # Model + distance
@@ -266,9 +248,10 @@ def model(theta):
     y = np.random.normal(mu, sigma, size=num_samples)
     return sum_stats(y)
 
+
 def f_dist(theta):
     ss = model(theta)
-    rho = np.abs(ss - ss_obs)   # Euclidean in 1D == abs
+    rho = np.abs(ss - ss_obs)  # Euclidean in 1D == abs
     return rho
 
 
@@ -288,28 +271,23 @@ v = 1.0
 # -------------------------
 # Run: Differential Evolution, Single Epsilon
 # -------------------------
-out_dif = sabc(
-    f_dist,
-    prior,
+config_dif = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
     n_particles=n_particles,
-    n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
     algorithm="single_eps",
     proposal=DifferentialEvolution(n_para=2),
 )
 
+out_dif = sabc(config_dif, n_simulation=n_simulation)
+
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_2 = update_population(
-    out_dif, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
-    )    
+out_dif_2 = update_population(out_dif, config_dif, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -339,13 +317,7 @@ sigma = pop_dif[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -353,35 +325,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -404,35 +353,12 @@ kde_sabc = gaussian_kde(values_sabc)
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc = kde_sabc(positions).reshape(MU.shape)
 
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z_sabc,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z_sabc, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -447,7 +373,7 @@ cbar.set_label("Posterior density")
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$, median",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -457,12 +383,7 @@ plt.show()
 T = eps_dif.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε
@@ -534,7 +455,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$, median",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -554,28 +475,23 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_3stats.pkl")
 # -------------------------
 # Run: Differential Evolution, Multi Epsilon
 # -------------------------
-out_dif_mult = sabc(
-    f_dist,
-    prior,
+config_dif_mult = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
     n_particles=n_particles,
-    n_simulation=n_simulation,
     v=v,
     show_checkpoint=200,
     algorithm="multi_eps",
     proposal=DifferentialEvolution(n_para=2),
 )
 
+out_dif_mult = sabc(config_dif_mult, n_simulation=n_simulation)
+
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_mult_2 = update_population(
-    out_dif_mult, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=DifferentialEvolution(n_para=2)
-    )    
+out_dif_mult_2 = update_population(out_dif_mult, config_dif_mult, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -605,13 +521,7 @@ sigma_mult = pop_dif_mult[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -619,35 +529,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -670,35 +557,14 @@ kde_sabc_mult = gaussian_kde(values_sabc_mult)
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc_mult = kde_sabc_mult(positions).reshape(MU.shape)
 
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_mult,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc_mult, levels=n_levels, cmap="Greys", zorder=1)
 
 ax.contour(
-    MU,
-    SIG,
-    Z_sabc_mult,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
+    MU, SIG, Z_sabc_mult, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2
 )
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -713,7 +579,7 @@ cbar.set_label("Posterior density")
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -723,12 +589,7 @@ plt.show()
 T = eps_dif_mult.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε  (multi-eps: 3 components)
@@ -746,7 +607,7 @@ ax.legend()
 # log
 ax = axes[0, 1]
 ax.plot(it, eps_dif_mult[0, :], label=r"$\mu$")
-ax.plot(it, eps_dif_mult[1, :], label=r"$\sigma$")  
+ax.plot(it, eps_dif_mult[1, :], label=r"$\sigma$")
 ax.plot(it, eps_dif_mult[2, :], label=r"median")
 ax.set_yscale("log")
 ax.grid(True, alpha=0.3)
@@ -806,7 +667,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()

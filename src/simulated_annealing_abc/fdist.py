@@ -14,8 +14,8 @@ def make_f_dist(
     *,
     num_samples: int,
     ss_obs: np.ndarray,
-    simulator: SimulatorFn,
-    stats_fn: StatsFn,
+    simulator: SimulatorFn | None = None,
+    stats_fn: StatsFn | None = None,
     seed: int | None = None,
     distance: DistanceMode = "abs",
     weights: np.ndarray | None = None,
@@ -25,13 +25,15 @@ def make_f_dist(
 ):
     """Build an allocation-free distance function f_dist(theta, out=None).
 
-    Pure NumPy mode (default):
+    Pure NumPy mode (default, ``fast=False``):
+      - Requires ``simulator`` and ``stats_fn``.
       - simulator(theta, y, rng) fills y in-place
       - stats_fn(y, ss) fills ss in-place
       - returns elementwise distances |ss - ss_obs| (or squared / weighted squared)
 
-    Optional Numba mode:
-      - set fast=True and provide simulator_nb, stats_fn_nb (both njit-compiled)
+    Optional Numba mode (``fast=True``):
+      - Requires ``simulator_nb`` and ``stats_fn_nb`` (both njit-compiled).
+      - ``simulator`` and ``stats_fn`` are not needed and can be omitted.
       - dispatches to simulated_annealing_abc.fdist_numba.make_f_dist_numba
     """
     ss_obs = np.asarray(ss_obs, dtype=np.float64).reshape(-1)
@@ -61,20 +63,29 @@ def make_f_dist(
             weights=w,  # pass validated/canonical weights (or None)
         )
 
+    # ---- validate required args for pure NumPy path
+    if simulator is None:
+        raise ValueError("simulator is required when fast=False (pure NumPy mode).")
+    if stats_fn is None:
+        raise ValueError("stats_fn is required when fast=False (pure NumPy mode).")
+
     # ---- choose transform once (no branching per call)
     if distance == "abs":
 
         def transform(out: np.ndarray) -> None:
             np.abs(out, out=out)
+
     elif distance == "sq":
 
         def transform(out: np.ndarray) -> None:
             np.square(out, out=out)
+
     elif distance == "weighted_sq":
 
         def transform(out: np.ndarray) -> None:
             np.square(out, out=out)
             out *= w
+
     else:
         raise ValueError(f"Unknown distance='{distance}'.")
 

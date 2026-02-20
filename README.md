@@ -71,6 +71,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 from simulated_annealing_abc import (
+    SABCConfig,
     sabc,
     make_f_dist,
     update_population,
@@ -158,38 +159,52 @@ f_dist = make_f_dist(
 
 Available distances: "abs", "sq", "weighted_sq". Default: "abs".
 
-### 4. Run SABC
+### 4. Configure and run SABC
+
+All algorithm settings are collected in a single `SABCConfig` dataclass.
+The simulation budget (`n_simulation`) is the only argument passed separately,
+since it typically changes between the initial run and subsequent updates.
 
 ```python
 rng_alg  = np.random.default_rng(18)
 rng_prop = np.random.default_rng(22)
 
-proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
-
-result = sabc(
-    f_dist,
-    prior,
+config = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
     n_particles=1000,
-    n_simulation=1_000_000,
+    v=1.0,
     show_checkpoint=500,
-    algorithm="single_eps", # or "multi_eps"
-    proposal=proposal,
+    algorithm="single_eps",   # or "multi_eps"
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
     rng=rng_alg,
 )
+
+result = sabc(config, n_simulation=1_000_000)
 ```
+
+#### SABCConfig fields
+
+| Field | Default | Description |
+|---|---|---|
+| `f_dist` | *(required)* | Distance function (from `make_f_dist` or hand-written) |
+| `prior` | *(required)* | Prior with `.rvs(rng)` and `.logpdf(theta)` |
+| `n_particles` | 1000 | Population size |
+| `v` | 1.0 | Annealing speed |
+| `delta` | 0.1 | Resampling parameter |
+| `algorithm` | `"single_eps"` | `"single_eps"` or `"multi_eps"` |
+| `resample` | `None` | Resampling interval (defaults to `2 * n_particles`) |
+| `proposal` | `None` | Proposal mechanism (defaults to `DifferentialEvolution`) |
+| `rng` | `None` | Algorithm RNG (`np.random.Generator`) |
+| `seed` | `None` | Alternative to `rng` (creates one internally) |
+| `checkpoint_history` | 1 | Record histories every N updates |
+| `show_progressbar` | `None` | Show progress bar if available |
+| `show_checkpoint` | `None` | Log progress every N updates |
 
 ### 5. Use update_population to continue from previous result
 
 ```python
-result_2 = update_population(
-    result,
-    f_dist,
-    prior,
-    n_simulation=1_000_000,
-    show_checkpoint=500,
-    proposal=proposal,
-    rng=rng_alg,
-)
+result_2 = update_population(result, config, n_simulation=1_000_000)
 ```
 
 ### 6. Get/Plot results
@@ -280,7 +295,7 @@ The algorithm has **three independent sources of randomness**:
 
 2. **SABC algorithm**
    - Accept/reject decisions and population resampling
-   - Controlled via `rng` or `seed` passed to `sabc` / `update_population`
+   - Controlled via `rng` or `seed` in `SABCConfig`
 
 3. **Proposal mechanism**
    - Randomness used to generate parameter proposals
@@ -325,7 +340,7 @@ This version:
 
 ### Numba-accelerated mode (advanced)
 
-To enable the fast path, provide Numba-compiled versions of the simulator and summary-statistics functions and set fast=True:
+To enable the fast path, provide Numba-compiled versions of the simulator and summary-statistics functions and set `fast=True`. The standard `simulator` and `stats_fn` arguments can be omitted in this case:
 
 ```python
 f_dist_fast = make_f_dist(

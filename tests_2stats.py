@@ -28,23 +28,23 @@
 # Inference is performed on the parameters `(mu, sigma)` using the empirical mean and standard deviation as summary statistics.
 
 # %%
-import numpy as np
-import numba as nb
-import matplotlib.pyplot as plt
-import emcee
-import time
-from scipy.stats import norm
-from scipy.stats import gaussian_kde
 from pathlib import Path
+
+import emcee
+import matplotlib.pyplot as plt
+import numba as nb
+import numpy as np
+from scipy.stats import gaussian_kde, norm
+
 from simulated_annealing_abc import (
-    sabc,
-    make_f_dist,
-    update_population,
     DifferentialEvolution,
-    StretchMove,
     RandomWalk,
+    SABCConfig,
+    StretchMove,
+    make_f_dist,
+    sabc,
     save_sabc_result,
-    load_sabc_result,
+    update_population,
 )
 
 # %%
@@ -110,13 +110,15 @@ def log_prior(theta):
         return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
     return -np.inf
 
+
 def log_likelihood(theta, y):
     mu, sigma = theta
     if sigma <= 0:
         return -np.inf
     n = y.size
     # Normal log-likelihood
-    return -n*np.log(sigma) - 0.5*np.sum((y - mu)**2) / (sigma**2)
+    return -n * np.log(sigma) - 0.5 * np.sum((y - mu) ** 2) / (sigma**2)
+
 
 def log_posterior(theta, y):
     lp = log_prior(theta)
@@ -124,16 +126,17 @@ def log_posterior(theta, y):
         return -np.inf
     return lp + log_likelihood(theta, y)
 
+
 # --- MCMC settings ---
 ndim = 2
-nwalkers = 20              # number of walkers
+nwalkers = 20  # number of walkers
 burnin = 10000
-nsteps = 5000              # production steps per walker
+nsteps = 5000  # production steps per walker
 thin = 100
 
 # --- initialize walkers uniformly from the prior ---
 p0 = np.empty((nwalkers, ndim))
-p0[:, 0] = np.random.uniform(mu_min, mu_max, size=nwalkers)       # mu
+p0[:, 0] = np.random.uniform(mu_min, mu_max, size=nwalkers)  # mu
 p0[:, 1] = np.random.uniform(max(sigma_min, 1e-6), sigma_max, size=nwalkers)  # sigma
 
 # --- run MCMC ---
@@ -159,7 +162,7 @@ kde = gaussian_kde(values)
 
 # Grid (manual zoom region)
 mu_lims = (7, 11)
-sigma_lims = (13, 17)       
+sigma_lims = (13, 17)
 mu_grid = np.linspace(mu_lims[0], mu_lims[1], 250)
 sig_grid = np.linspace(sigma_lims[0], sigma_lims[1], 250)
 MU, SIG = np.meshgrid(mu_grid, sig_grid)
@@ -173,37 +176,14 @@ plt.grid(True, alpha=0.3, zorder=0)
 
 # Shaded contours (grayscale)
 n_levels = 10
-cf = plt.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = plt.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
 # Contour lines
-plt.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+plt.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 # True parameters
 plt.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 plt.xlim(mu_lims)
@@ -221,16 +201,16 @@ plt.show()
 # ---
 
 # %%
-# IMPORTANT -> Prior must be defined so that 
-# it can generate samples (with prior.rvs) 
+# IMPORTANT -> Prior must be defined so that
+# it can generate samples (with prior.rvs)
 # and compute logpdf (with prior.logpdf)
+
 
 class Prior:
     """Independent Uniform prior for (mu, sigma)."""
 
     def rvs(self, rng: np.random.Generator | None = None):
-        """
-        Draw a sample from the prior.
+        """Draw a sample from the prior.
 
         If rng is provided, it is used for reproducibility.
         Otherwise, falls back to NumPy's default RNG.
@@ -264,9 +244,9 @@ prior = Prior()
 # theta: model parameters
 # ss_out: summary statistics output array
 
+
 def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
-    """
-    Fill y in-place with N(mu, sigma).
+    """Fill y in-place with N(mu, sigma).
     theta: (2,) = [mu, sigma]
     y: (num_samples,)
     """
@@ -276,8 +256,7 @@ def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> Non
 
 
 def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
-    """
-    Fill ss_out in-place with summary statistics.
+    """Fill ss_out in-place with summary statistics.
     ss_out: (2,) = [mean(y), std(y)]
     """
     ss_out[0] = np.mean(y)
@@ -295,6 +274,7 @@ def simulator_nb(theta, y):
     tmp = np.random.normal(0.0, 1.0, y.size)  # allocates
     for i in range(y.size):
         y[i] = mu + sigma * tmp[i]
+
 
 @nb.njit(cache=True)
 def stats_fn_nb(y, ss):
@@ -336,7 +316,7 @@ f_dist = make_f_dist(
     ss_obs=ss_obs,
     simulator=simulator,
     stats_fn=stats_fn,
-    seed=123,   # optional, for reproducibility of the simulator RNG inside f_dist
+    seed=123,  # optional, for reproducibility of the simulator RNG inside f_dist
 )
 
 # %%
@@ -346,8 +326,6 @@ f_dist = make_f_dist(
 f_dist_fast = make_f_dist(
     num_samples=num_samples,
     ss_obs=ss_obs,
-    simulator=lambda theta, y, rng: None,  # unused in fast=True mode
-    stats_fn=lambda y, ss: None,           # unused in fast=True mode
     fast=True,
     simulator_nb=simulator_nb,
     stats_fn_nb=stats_fn_nb,
@@ -371,58 +349,45 @@ v = 1.0
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+config_dif = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="single_eps",
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Differential Evolution, Single Epsilon
 # -------------------------
-out_dif = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="single_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_dif = sabc(config_dif, n_simulation=n_simulation)
 
 # %%
 # Testing numba version
 
-# rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
-# rng_prop = np.random.default_rng(22)  # proposal randomness
+# rng_alg  = np.random.default_rng(18)
+# rng_prop = np.random.default_rng(22)
 
-# proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
-
-# out_dif_nb = sabc(
-#     f_dist_fast,
-#     prior,
-#     n_particles=n_particles,
-#     n_simulation=n_simulation,
-#     v=v,
-#     show_checkpoint=200,
+# config_dif_nb = SABCConfig(
+#     f_dist=f_dist_fast, prior=prior,
+#     n_particles=n_particles, v=v, show_checkpoint=200,
 #     algorithm="single_eps",
-#     proposal=proposal,
+#     proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
 #     rng=rng_alg,
 # )
+# out_dif_nb = sabc(config_dif_nb, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_2 = update_population(
-    out_dif, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_dif_2 = update_population(out_dif, config_dif, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -452,13 +417,7 @@ sigma = pop_dif[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -466,35 +425,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -517,35 +453,12 @@ kde_sabc = gaussian_kde(values_sabc)
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc = kde_sabc(positions).reshape(MU.shape)
 
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z_sabc,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z_sabc, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -560,7 +473,7 @@ cbar.set_label("Posterior density")
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -570,12 +483,7 @@ plt.show()
 T = eps_dif.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε
@@ -643,7 +551,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -661,38 +569,30 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_2stats.pkl")
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
+config_dif_mult = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="multi_eps",
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Differential Evolution, Multi Epsilon
 # -------------------------
-out_dif_mult = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="multi_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_dif_mult = sabc(config_dif_mult, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_mult_2 = update_population(
-    out_dif_mult, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-    )    
+out_dif_mult_2 = update_population(out_dif_mult, config_dif_mult, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -722,13 +622,7 @@ sigma_mult = pop_dif_mult[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -736,35 +630,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -787,35 +658,14 @@ kde_sabc_mult = gaussian_kde(values_sabc_mult)
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc_mult = kde_sabc_mult(positions).reshape(MU.shape)
 
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_mult,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc_mult, levels=n_levels, cmap="Greys", zorder=1)
 
 ax.contour(
-    MU,
-    SIG,
-    Z_sabc_mult,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
+    MU, SIG, Z_sabc_mult, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2
 )
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -830,7 +680,7 @@ cbar.set_label("Posterior density")
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -840,12 +690,7 @@ plt.show()
 T = eps_dif_mult.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε  (multi-eps: 2 components)
@@ -917,7 +762,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -935,38 +780,30 @@ save_sabc_result(out_dif_mult_2, HERE / "test_results" / "out_DE_mult_2stats.pkl
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = RandomWalk(n_para=2, rng=rng_prop)
+config_rw = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="single_eps",
+    proposal=RandomWalk(n_para=2, rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Random Walk, Single Epsilon
 # -------------------------
-out_rw = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="single_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_rw = sabc(config_rw, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_rw_2 = update_population(
-    out_rw, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-    )    
+out_rw_2 = update_population(out_rw, config_rw, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -996,13 +833,7 @@ sigma_rw = pop_rw[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -1010,35 +841,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -1059,36 +867,13 @@ values_sabc_rw = np.vstack([mu_rw, sigma_rw])
 kde_sabc_rw = gaussian_kde(values_sabc_rw)
 
 positions = np.vstack([MU.ravel(), SIG.ravel()])
-Z_sabc_rw = kde_sabc_rw(positions).reshape(MU.shape)    
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_rw,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+Z_sabc_rw = kde_sabc_rw(positions).reshape(MU.shape)
+ax.contourf(MU, SIG, Z_sabc_rw, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z_sabc_rw,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z_sabc_rw, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -1102,8 +887,7 @@ cbar = fig.colorbar(cf, ax=axes, shrink=0.9)
 cbar.set_label("Posterior density")
 
 fig.suptitle(
-    r"Proposal: Randwom Walk | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Randwom Walk | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()
@@ -1113,12 +897,7 @@ plt.show()
 T = eps_rw.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε
@@ -1186,7 +965,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -1204,38 +983,30 @@ save_sabc_result(out_rw_2, HERE / "test_results" / "out_RW_sing_2stats.pkl")
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = RandomWalk(n_para=2, rng=rng_prop)
+config_rw_mult = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="multi_eps",
+    proposal=RandomWalk(n_para=2, rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Random Walk, Multi Epsilon
 # -------------------------
-out_rw_mult = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="multi_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_rw_mult = sabc(config_rw_mult, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_rw_mult_2 = update_population(
-    out_rw_mult, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-    )    
+out_rw_mult_2 = update_population(out_rw_mult, config_rw_mult, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -1265,13 +1036,7 @@ sigma_rw_mult = pop_rw_mult[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -1279,35 +1044,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -1329,35 +1071,14 @@ kde_sabc_rw_mult = gaussian_kde(values_sabc_rw_mult)
 
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc_rw_mult = kde_sabc_rw_mult(positions).reshape(MU.shape)
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_rw_mult,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc_rw_mult, levels=n_levels, cmap="Greys", zorder=1)
 
 ax.contour(
-    MU,
-    SIG,
-    Z_sabc_rw_mult,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
+    MU, SIG, Z_sabc_rw_mult, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2
 )
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -1371,8 +1092,7 @@ cbar = fig.colorbar(cf, ax=axes, shrink=0.9)
 cbar.set_label("Posterior density")
 
 fig.suptitle(
-    r"Proposal: Random Walk | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Random Walk | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()
@@ -1382,12 +1102,7 @@ plt.show()
 T = eps_rw_mult.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε  (multi-eps: 2 components)
@@ -1459,7 +1174,7 @@ ax.legend()
 
 fig.suptitle(
     r"Proposal: Differential Evolution | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    fontsize=14,
 )
 
 plt.show()
@@ -1477,38 +1192,30 @@ save_sabc_result(out_rw_mult_2, HERE / "test_results" / "out_RW_mult_2stats.pkl"
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = StretchMove(rng=rng_prop)
+config_sm = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="single_eps",
+    proposal=StretchMove(rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Stretch Move, Single Epsilon
 # -------------------------
-out_sm = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="single_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_sm = sabc(config_sm, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_sm_2 = update_population(
-    out_sm, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-)    
+out_sm_2 = update_population(out_sm, config_sm, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -1538,13 +1245,7 @@ sigma_sm = pop_sm[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -1552,35 +1253,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -1601,36 +1279,13 @@ values_sabc_sm = np.vstack([mu_sm, sigma_sm])
 kde_sabc_sm = gaussian_kde(values_sabc_sm)
 
 positions = np.vstack([MU.ravel(), SIG.ravel()])
-Z_sabc_sm = kde_sabc_sm(positions).reshape(MU.shape)    
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_sm,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+Z_sabc_sm = kde_sabc_sm(positions).reshape(MU.shape)
+ax.contourf(MU, SIG, Z_sabc_sm, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z_sabc_sm,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z_sabc_sm, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -1644,8 +1299,7 @@ cbar = fig.colorbar(cf, ax=axes, shrink=0.9)
 cbar.set_label("Posterior density")
 
 fig.suptitle(
-    r"Proposal: Stretch Move | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Stretch Move | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()
@@ -1655,12 +1309,7 @@ plt.show()
 T = eps_sm.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε
@@ -1727,8 +1376,7 @@ ax.set_title(r"Mean $u$ (log y)")
 ax.legend()
 
 fig.suptitle(
-    r"Proposal: Stretch Move | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Stretch Move | Algorithm: single_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()
@@ -1746,38 +1394,30 @@ save_sabc_result(out_sm_2, HERE / "test_results" / "out_SM_sing_2stats.pkl")
 
 # %%
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
-proposal = StretchMove(rng=rng_prop)
+config_sm_mult = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=n_particles,
+    v=v,
+    show_checkpoint=200,
+    algorithm="multi_eps",
+    proposal=StretchMove(rng=rng_prop),
+    rng=rng_alg,
+)
 
 # -------------------------
 # Run: Stretch Move, Multi Epsilon
 # -------------------------
-out_sm_mult = sabc(
-    f_dist,
-    prior,
-    n_particles=n_particles,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    algorithm="multi_eps",
-    proposal=proposal,
-    rng=rng_alg,
-)
+out_sm_mult = sabc(config_sm_mult, n_simulation=n_simulation)
 
 # %%
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_sm_mult_2 = update_population(
-    out_sm_mult, f_dist, prior,
-    n_simulation=n_simulation,
-    v=v,
-    show_checkpoint=200,
-    proposal=proposal,
-    rng=rng_alg,
-    )    
+out_sm_mult_2 = update_population(out_sm_mult, config_sm_mult, n_simulation=n_simulation)
 
 # %%
 # Population (n_particles × n_params)
@@ -1807,13 +1447,7 @@ sigma_sm_mult = pop_sm_mult[1, :]
 # -------------------------
 # Compare true and sabc-inferred posteriors
 # -------------------------
-fig, axes = plt.subplots(
-    1, 2,
-    figsize=(11, 5),
-    sharex=True,
-    sharey=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(1, 2, figsize=(11, 5), sharex=True, sharey=True, constrained_layout=True)
 
 # -------------------------
 # LEFT: True posterior
@@ -1821,35 +1455,12 @@ fig, axes = plt.subplots(
 ax = axes[0]
 ax.grid(True, alpha=0.3, zorder=0)
 
-cf = ax.contourf(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+cf = ax.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 
-ax.contour(
-    MU,
-    SIG,
-    Z,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
-)
+ax.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlim(mu_lims)
@@ -1871,35 +1482,14 @@ kde_sabc_sm_mult = gaussian_kde(values_sabc_sm_mult)
 
 positions = np.vstack([MU.ravel(), SIG.ravel()])
 Z_sabc_sm_mult = kde_sabc_sm_mult(positions).reshape(MU.shape)
-ax.contourf(
-    MU,
-    SIG,
-    Z_sabc_sm_mult,
-    levels=n_levels,
-    cmap="Greys",
-    zorder=1
-)
+ax.contourf(MU, SIG, Z_sabc_sm_mult, levels=n_levels, cmap="Greys", zorder=1)
 
 ax.contour(
-    MU,
-    SIG,
-    Z_sabc_sm_mult,
-    levels=n_levels,
-    colors="black",
-    linewidths=0.6,
-    alpha=0.6,
-    zorder=2
+    MU, SIG, Z_sabc_sm_mult, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2
 )
 
 ax.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 ax.set_xlabel(r"$\mu$")
@@ -1913,8 +1503,7 @@ cbar = fig.colorbar(cf, ax=axes, shrink=0.9)
 cbar.set_label("Posterior density")
 
 fig.suptitle(
-    r"Proposal: Stretch Move | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Stretch Move | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()
@@ -1924,12 +1513,7 @@ plt.show()
 T = eps_sm_mult.shape[1]
 it = np.arange(T)
 
-fig, axes = plt.subplots(
-    3, 2,
-    figsize=(12, 9),
-    sharex=True,
-    constrained_layout=True
-)
+fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True, constrained_layout=True)
 
 # =====================================================
 # ε  (multi-eps: 2 components)
@@ -2000,8 +1584,7 @@ ax.set_title(r"Mean $u$ (log y)")
 ax.legend()
 
 fig.suptitle(
-    r"Proposal: Stretch Move | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$",
-    fontsize=14
+    r"Proposal: Stretch Move | Algorithm: multi_eps | Summary stats: $\mu$, $\sigma$", fontsize=14
 )
 
 plt.show()

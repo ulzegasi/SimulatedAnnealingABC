@@ -8,12 +8,13 @@ from .proposals import (
     RandomWalk,
     StretchMove,
 )
-from .sabc import SABCResult, SABCState, sabc, update_population
+from .sabc import SABCConfig, SABCResult, SABCState, sabc, update_population
 
 __all__ = [
     "DifferentialEvolution",
     "Proposal",
     "RandomWalk",
+    "SABCConfig",
     "SABCResult",
     "SABCState",
     "StretchMove",

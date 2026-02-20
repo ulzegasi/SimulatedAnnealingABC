@@ -1,10 +1,8 @@
 """fdist_numba.py."""
 
-from typing import Literal
-
 import numpy as np
 
-DistanceMode = Literal["abs", "sq", "weighted_sq"]
+from .fdist import DistanceMode
 
 try:
     import numba as nb

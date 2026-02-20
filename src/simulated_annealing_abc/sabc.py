@@ -10,16 +10,81 @@ from typing import Callable
 import numpy as np
 from scipy.optimize import root_scalar
 
-from simulated_annealing_abc.cdf_estimators import build_cdf
-from simulated_annealing_abc.proposals import (
+from .cdf_estimators import build_cdf
+from .helper import track_progress
+from .proposals import (
     DifferentialEvolution,
     Proposal,
     update_proposal,
 )
 
-from .helper import track_progress
-
 LOG = logging.getLogger(__name__)
+
+
+# -------------------------------------------
+# Configuration
+# -------------------------------------------
+@dataclass
+class SABCConfig:
+    """Full configuration for an SABC run.
+
+    Args:
+        f_dist: Distance function. Either from ``make_f_dist()`` or hand-written.
+            Signature: ``f_dist(theta) -> np.ndarray`` or ``f_dist(theta, out=buf) -> np.ndarray``.
+        prior: Prior distribution object with ``.rvs(rng)`` and ``.logpdf(theta)`` methods.
+        n_particles: Number of particles in the population.
+        v: Annealing speed parameter (must be positive).
+        delta: Resampling parameter (must be positive).
+        algorithm: Epsilon update strategy, ``"single_eps"`` or ``"multi_eps"``.
+        resample: Resampling interval in accepted proposals.
+            Defaults to ``2 * n_particles`` if ``None``.
+        proposal: Proposal mechanism (e.g. ``DifferentialEvolution``, ``RandomWalk``,
+            ``StretchMove``). Defaults to ``DifferentialEvolution`` if ``None``.
+        rng: NumPy random number generator for algorithm randomness.
+        seed: Seed for creating an RNG (alternative to ``rng``).
+        checkpoint_history: Record histories every N population updates.
+        show_progressbar: Show a progress bar (tqdm/rich) if available.
+        show_checkpoint: Log progress every N population updates.
+    """
+
+    # Problem definition
+    f_dist: Callable
+    prior: object
+
+    # Algorithm parameters
+    n_particles: int = 1000
+    v: float = 1.0
+    delta: float = 0.1
+    algorithm: str = "single_eps"
+    resample: int | None = None
+
+    # Proposal
+    proposal: Proposal | None = None
+
+    # RNG
+    rng: np.random.Generator | None = None
+    seed: int | None = None
+
+    # Display / checkpointing
+    checkpoint_history: int = 1
+    show_progressbar: bool | None = None
+    show_checkpoint: float | int | None = None
+
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.v <= 0:
+            raise ValueError("Annealing speed v must be positive.")
+        if self.delta <= 0:
+            raise ValueError("Resampling parameter delta must be positive.")
+        if self.algorithm not in ("single_eps", "multi_eps"):
+            raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
+        if self.rng is not None and self.seed is not None:
+            raise ValueError("Provide either rng or seed, not both.")
+
+        _check_prior(self.prior)
+
+        if self.rng is None:
+            self.rng = np.random.default_rng(self.seed)
 
 
 # -------------------------------------------
@@ -27,6 +92,8 @@ LOG = logging.getLogger(__name__)
 # -------------------------------------------
 @dataclass
 class SABCState:
+    """Internal algorithm state, stored alongside results."""
+
     epsilon: np.ndarray  # epsilon = temperature
     algorithm: str  # the algorithm used
 
@@ -48,6 +115,8 @@ class SABCState:
 
 @dataclass
 class SABCResult:
+    """Result of an SABC run."""
+
     population: np.ndarray  # parameter samples
     u: np.ndarray  # transformed distances
     rho: np.ndarray  # user-defined distances
@@ -61,6 +130,15 @@ class SABCResult:
 # Update a single epsilon.
 # See eq(31) in Albert et al., Statistics and Computing 25, 2015
 def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
+    """Compute new single epsilon from mean transformed distance.
+
+    Args:
+        u_bar: Mean of transformed distances across particles.
+        v: Annealing speed parameter.
+
+    Returns:
+        Array of length 1 containing the updated epsilon.
+    """
     if u_bar <= 1e-12:
         return np.array([0.0], dtype=float)
 
@@ -75,6 +153,15 @@ def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
 
 # Update multiple epsilons.
 def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
+    """Compute new epsilon vector (one per summary statistic).
+
+    Args:
+        u: Transformed distances, shape ``(n_particles, n_stats)``.
+        v: Annealing speed parameter.
+
+    Returns:
+        Array of length ``n_stats`` containing the updated epsilons.
+    """
     if u.ndim != 2:
         raise ValueError("u must be 2D (n_particles, n_stats).")
 
@@ -156,6 +243,19 @@ def resample_population(
     delta: float,
     rng: np.random.Generator,
 ):
+    """Resample population based on importance weights.
+
+    Args:
+        population: Current particle positions, shape ``(n_particles, n_para)``.
+        u: Transformed distances, shape ``(n_particles, n_stats)``.
+        rho: Raw distances, shape ``(n_particles, n_stats)``.
+        logprior: Log prior values, shape ``(n_particles,)``.
+        delta: Resampling parameter.
+        rng: Random number generator.
+
+    Returns:
+        Tuple of resampled (population, u, rho, logprior, ess).
+    """
     n_particles = population.shape[0]
     u_bar = np.mean(u, axis=0)
     u_bar = np.maximum(u_bar, 1e-12)
@@ -181,6 +281,7 @@ def resample_population(
 # Check if prior is valid
 # -------------------------------------------
 def _check_prior(prior):
+    """Validate that prior has .rvs(rng) and .logpdf(theta) methods."""
     for name in ("rvs", "logpdf"):
         if not hasattr(prior, name):
             raise TypeError("prior must provide methods .rvs() and .logpdf(theta). ")
@@ -195,33 +296,253 @@ def _check_prior(prior):
 
 
 # -------------------------------------------
+# Extracted helpers (independently callable for profiling)
+# -------------------------------------------
+
+
+def _draw_prior_samples(
+    f_dist: Callable,
+    prior,
+    n_particles: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Draw ``n_particles`` from prior and evaluate f_dist for each.
+
+    Args:
+        f_dist: Distance function.
+        prior: Prior distribution with ``.rvs(rng)`` and ``.logpdf(theta)``.
+        n_particles: Number of particles to draw.
+        rng: Random number generator.
+
+    Returns:
+        Tuple of (population, rho, logprior) arrays.
+    """
+    # Draw one sample to determine dimensions
+    theta0 = np.asarray(prior.rvs(rng), dtype=float)
+    rho0 = f_dist(theta0)
+    rho0 = np.asarray(rho0, dtype=np.float64).reshape(-1)
+    if rho0.ndim != 1:
+        raise ValueError("f_dist must return a 1D array of distances.")
+    n_para = theta0.size
+    n_stats = rho0.size
+
+    # Allocate containers
+    population = np.empty((n_particles, n_para), dtype=float)
+    rho = np.empty((n_particles, n_stats), dtype=float)
+
+    # Store first sample (already computed)
+    population[0, :] = theta0
+    rho[0, :] = rho0
+
+    # Fill the rest ----> CAN BE PARALLELIZED <----
+    for i in range(1, n_particles):
+        theta = np.asarray(prior.rvs(rng), dtype=float)
+        rho_i = f_dist(theta)
+        population[i, :] = theta
+        rho[i, :] = np.asarray(rho_i, dtype=np.float64).reshape(-1)
+
+    if np.any(rho < 0):
+        raise ValueError("Negative distances are not allowed!")
+
+    # Precompute log prior for current population
+    logprior = np.array(
+        [float(prior.logpdf(population[i, :])) for i in range(n_particles)], dtype=float
+    )
+
+    return population, rho, logprior
+
+
+def _propose_and_accept(
+    i: int,
+    population: np.ndarray,
+    u: np.ndarray,
+    rho: np.ndarray,
+    logprior: np.ndarray,
+    pop_inactive: np.ndarray,
+    proposal: Proposal,
+    prior,
+    f_dist: Callable,
+    cdfs_dist_prior: Callable,
+    inv_epsilon: np.ndarray,
+    rho_buf: np.ndarray,
+    u_buf: np.ndarray,
+    rng: np.random.Generator,
+) -> bool:
+    """Propose a new particle and accept/reject (Metropolis-Hastings step).
+
+    Modifies ``population``, ``u``, ``rho``, ``logprior`` in-place if accepted.
+
+    Args:
+        i: Index of the particle to update.
+        population: Current particle positions, shape ``(n_particles, n_para)``.
+        u: Transformed distances, shape ``(n_particles, n_stats)``.
+        rho: Raw distances, shape ``(n_particles, n_stats)``.
+        logprior: Log prior values, shape ``(n_particles,)``.
+        pop_inactive: Inactive half of the population (used by the proposal).
+        proposal: Proposal mechanism.
+        prior: Prior distribution.
+        f_dist: Distance function.
+        cdfs_dist_prior: CDF mapping function.
+        inv_epsilon: Inverse of current epsilon, shape ``(n_stats,)`` or ``(1,)``.
+        rho_buf: Pre-allocated buffer for proposed distances.
+        u_buf: Pre-allocated buffer for proposed transformed distances.
+        rng: Random number generator.
+
+    Returns:
+        True if the proposal was accepted.
+    """
+    theta_cur = population[i, :]
+    theta_prop, log_factor = proposal(theta_cur, pop_inactive)
+
+    lprior_prop = float(prior.logpdf(theta_prop))
+
+    if not np.isfinite(lprior_prop):
+        log_accept_prob = -np.inf
+    else:
+        lprior_cur = logprior[i]
+
+        f_dist(theta_prop, out=rho_buf)
+        cdfs_dist_prior(rho_buf, out=u_buf)
+        log_accept_prob = (
+            lprior_prop - lprior_cur + np.sum((u[i, :] - u_buf) * inv_epsilon) + log_factor
+        )
+
+    u01 = rng.random()
+    if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
+        population[i, :] = theta_prop
+        u[i, :] = u_buf
+        rho[i, :] = rho_buf
+        logprior[i] = lprior_prop
+        return True
+    return False
+
+
+def _update_single_batch(
+    active: slice,
+    population: np.ndarray,
+    u: np.ndarray,
+    rho: np.ndarray,
+    logprior: np.ndarray,
+    pop_inactive: np.ndarray,
+    proposal: Proposal,
+    prior,
+    f_dist: Callable,
+    cdfs_dist_prior: Callable,
+    inv_epsilon: np.ndarray,
+    rho_buf: np.ndarray,
+    u_buf: np.ndarray,
+    rng: np.random.Generator,
+) -> int:
+    """Update all particles in one active half-batch.
+
+    This is the natural parallelization boundary.
+
+    Args:
+        active: Slice of particle indices to update.
+        population: Current particle positions (mutated in-place).
+        u: Transformed distances (mutated in-place).
+        rho: Raw distances (mutated in-place).
+        logprior: Log prior values (mutated in-place).
+        pop_inactive: Inactive half of the population.
+        proposal: Proposal mechanism.
+        prior: Prior distribution.
+        f_dist: Distance function.
+        cdfs_dist_prior: CDF mapping function.
+        inv_epsilon: Inverse of current epsilon.
+        rho_buf: Pre-allocated buffer for proposed distances.
+        u_buf: Pre-allocated buffer for proposed transformed distances.
+        rng: Random number generator.
+
+    Returns:
+        Number of accepted proposals.
+    """
+    n_accept = 0
+    for i in range(active.start, active.stop):
+        if _propose_and_accept(
+            i,
+            population,
+            u,
+            rho,
+            logprior,
+            pop_inactive,
+            proposal,
+            prior,
+            f_dist,
+            cdfs_dist_prior,
+            inv_epsilon,
+            rho_buf,
+            u_buf,
+            rng,
+        ):
+            n_accept += 1
+    return n_accept
+
+
+def _record_checkpoint(
+    state: SABCState,
+    u: np.ndarray,
+    rho: np.ndarray,
+    ix: int,
+    n_population_updates: int,
+    t_start: int,
+    checkpoint_history: int,
+    show_checkpoint: float | int | None,
+) -> None:
+    """Record histories and log progress at checkpoint intervals.
+
+    Args:
+        state: Algorithm state to update.
+        u: Current transformed distances.
+        rho: Current raw distances.
+        ix: Current iteration index (1-based).
+        n_population_updates: Total iterations.
+        t_start: Start time from ``time.perf_counter_ns()``.
+        checkpoint_history: Record history every N iterations.
+        show_checkpoint: Log progress every N iterations (or None to skip).
+    """
+    if (show_checkpoint is not None) and (ix % show_checkpoint == 0 or ix == n_population_updates):
+        elapsed = (time.perf_counter_ns() - t_start) / 1e9
+        eta = elapsed / ix * (n_population_updates - ix)
+        eta_str = f"{eta:.2f} seconds" if eta > 1 else "< 1 second"
+        LOG.debug(
+            f"Update {ix}/{n_population_updates}  "
+            f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  ETA={eta_str}",
+        )
+
+    if ix % checkpoint_history == 0:
+        state.epsilon_history.append(state.epsilon.copy())
+        state.u_history.append(np.mean(u, axis=0))
+        state.rho_history.append(np.mean(rho, axis=0))
+
+
+# -------------------------------------------
 # Initialization
 # -------------------------------------------
 
 
-def initialization(
-    f_dist,
-    prior,
-    *args,
-    n_particles: int,
-    n_simulation: int,
-    v: float = 1.0,
-    delta: float = 0.1,
-    algorithm: str = "single_eps",
-    rng: np.random.Generator | None = None,
-    seed: int | None = None,
-    **kwargs,
-) -> SABCResult:
+def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
+    """Initialize population from the prior.
 
-    _check_prior(prior)
+    Draws ``n_particles`` samples from the prior, evaluates distances,
+    builds CDF mapping, performs initial resampling, and computes initial epsilon.
+
+    Args:
+        config: Full SABC configuration.
+        n_simulation: Total simulation budget.
+
+    Returns:
+        Initial ``SABCResult`` ready for ``update_population()``.
+    """
+    f_dist = config.f_dist
+    prior = config.prior
+    n_particles = config.n_particles
+    v = config.v
+    delta = config.delta
+    algorithm = config.algorithm
+    rng = config.rng
 
     if n_simulation < n_particles:
         raise ValueError(f"`n_simulation={n_simulation}` too small for {n_particles} particles.")
-
-    if rng is not None and seed is not None:
-        raise ValueError("Provide either rng or seed, not both.")
-    if rng is None:
-        rng = np.random.default_rng(seed)
 
     LOG.info(
         f"Initialization for '{algorithm}' "
@@ -229,41 +550,8 @@ def initialization(
     )
 
     # ---------------------
-    # Draw one sample from prior to initialize containers
-    theta0 = np.asarray(prior.rvs(rng), dtype=float)  # take a random sample
-    rho0 = f_dist(theta0, *args, **kwargs)
-    rho0 = np.asarray(rho0, dtype=np.float64).reshape(-1)
-    if rho0.ndim != 1:
-        raise ValueError("f_dist must return a 1D array of distances.")
-    n_para = theta0.size
-    n_stats = rho0.size
-
-    # ---------------------
-    # Allocate containers
-    population = np.empty((n_particles, n_para), dtype=float)
-    rho = np.empty((n_particles, n_stats), dtype=float)
-
-    # ---------------------
-    # Store first sample (already computed, why waste it?!)
-    population[0, :] = theta0
-    rho[0, :] = rho0
-
-    # ---------------------
-    # Fill the rest to build prior sample ----> CAN BE PARALLELIZED <----
-    for i in range(1, n_particles):
-        theta = np.asarray(prior.rvs(rng), dtype=float)
-        rho_i = f_dist(theta, *args, **kwargs)
-        population[i, :] = theta
-        rho[i, :] = np.asarray(rho_i, dtype=np.float64).reshape(-1)
-
-    if np.any(rho < 0):
-        raise ValueError("Negative distances are not allowed!")
-
-    # ---------------------
-    # Precompute log prior for current population
-    logprior = np.array(
-        [float(prior.logpdf(population[i, :])) for i in range(n_particles)], dtype=float
-    )
+    # Draw prior samples and evaluate distances
+    population, rho, logprior = _draw_prior_samples(f_dist, prior, n_particles, rng)
 
     # ------------------
     # Estimate the cdf of ρ given the prior
@@ -280,7 +568,7 @@ def initialization(
         population, u, rho_prior, logprior, delta, rng
     )
 
-    rho_history = [np.mean(rho_prior, axis=0)]  # <-- moved here
+    rho_history = [np.mean(rho_prior, axis=0)]
     u_history = [np.mean(u, axis=0)]
 
     if algorithm == "multi_eps":
@@ -318,31 +606,31 @@ def initialization(
 
 def update_population(
     population_state: SABCResult,
-    f_dist,
-    prior,
-    *args,
+    config: SABCConfig,
     n_simulation: int,
-    v: float = 1.0,
-    delta: float = 0.1,
-    proposal: Proposal | None = None,
-    resample: int | None = None,
-    checkpoint_history: int = 1,
-    show_progressbar: bool | None = None,
-    show_checkpoint: float | int | None = None,
-    rng: np.random.Generator | None = None,
-    seed: int | None = None,
-    **kwargs,
 ) -> SABCResult:
+    """Update population using MCMC proposals, resampling, and annealing.
 
-    if v <= 0:
-        raise ValueError("Annealing speed v must be positive.")
-    if delta <= 0:
-        raise ValueError("Resampling parameter delta must be positive.")
+    Args:
+        population_state: Current SABC result (from ``initialization()`` or a previous run).
+        config: Full SABC configuration.
+        n_simulation: Simulation budget for this update round.
 
-    _check_prior(prior)
+    Returns:
+        Updated ``SABCResult`` (same object, mutated in-place).
+    """
+    f_dist = config.f_dist
+    prior = config.prior
+    v = config.v
+    delta = config.delta
+    proposal = config.proposal
+    resample = config.resample
+    checkpoint_history = config.checkpoint_history
+    show_progressbar = config.show_progressbar
+    show_checkpoint = config.show_checkpoint
+    rng = config.rng
 
     if show_checkpoint is None:
-        # show_checkpoint = None if INTERACTIVE_SESSION else 100
         show_checkpoint = 100
 
     # ---------------------
@@ -363,28 +651,18 @@ def update_population(
     n_stats = u.shape[1]
 
     # ---------------------
-    # Rebuild CDF mapping
-    # if we are resuming from a serialized checkpoint
+    # Rebuild CDF mapping if resuming from a serialized checkpoint
     if state.cdfs_dist_prior is None:
         state.cdfs_dist_prior = build_cdf(state.rho_prior)
 
     # ---------------------
-    # Dedicated RNG for accept/reject and any local randomness
-    if rng is not None and seed is not None:
-        raise ValueError("Provide either rng or seed, not both.")
-    if rng is None:
-        rng = np.random.default_rng(seed)
-
-    # ---------------------
-    # Set up proposal mechanism and
-    # resampling interval, if not provided
+    # Set up proposal mechanism and resampling interval, if not provided
     if proposal is None:
         n_para = population.shape[1]
         proposal = DifferentialEvolution(n_para=n_para, rng=rng)
     if resample is None:
         resample = 2 * n_particles
 
-    # ---------------------
     # Estimate jump covariance from current population
     update_proposal(proposal, population)
 
@@ -395,25 +673,22 @@ def update_population(
         warnings.warn(
             "n_simulation too small to perform any population update.",
             RuntimeWarning,
-            stack_level=1,
+            stacklevel=1,
         )
         return population_state
     LOG.debug(f"Running {n_population_updates} population updates.")
 
     # ---------------------
-    # To estimate ETA
     t_start = time.perf_counter_ns()
 
-    # ---------------------
     # Buffers to avoid repeated allocations
     rho_prop_buf = np.empty(n_stats, dtype=np.float64)
     u_prop_buf = np.empty(n_stats, dtype=np.float64)
 
     # ---------------------
-    # Loop over population updates
-    # At each iteration ix all particles are updated
+    # Main loop: at each iteration all particles are updated
     for ix in track_progress(range(1, n_population_updates + 1), show_progressbar=show_progressbar):
-        inv_epsilon = 1.0 / state.epsilon  # used later in acceptance probability
+        inv_epsilon = 1.0 / state.epsilon
 
         # Split population indices in two halves
         mid = n_particles // 2
@@ -421,54 +696,34 @@ def update_population(
         batch_2 = slice(mid, n_particles)
 
         n_accept_tmp = 0
-
         for active, inactive in ((batch_1, batch_2), (batch_2, batch_1)):
             pop_inactive = population[inactive, :]
+            n_accept_tmp += _update_single_batch(
+                active,
+                population,
+                u,
+                rho,
+                logprior,
+                pop_inactive,
+                proposal,
+                prior,
+                f_dist,
+                state.cdfs_dist_prior,
+                inv_epsilon,
+                rho_prop_buf,
+                u_prop_buf,
+                rng,
+            )
 
-            # ----> INNER LOOP CAN BE PARALLELIZED <----
-            for i in range(active.start, active.stop):
-                # Generate proposal
-                theta_cur = population[i, :]
-                theta_prop, log_factor = proposal(theta_cur, pop_inactive)
-
-                # Evaluate log prior at proposed theta
-                lprior_prop = float(prior.logpdf(theta_prop))
-
-                # Compute acceptance probability
-                if not np.isfinite(lprior_prop):
-                    log_accept_prob = -np.inf
-                else:
-                    lprior_cur = logprior[i]
-
-                    f_dist(theta_prop, out=rho_prop_buf)
-                    state.cdfs_dist_prior(rho_prop_buf, out=u_prop_buf)
-                    log_accept_prob = (
-                        lprior_prop
-                        - lprior_cur
-                        + np.sum((u[i, :] - u_prop_buf) * inv_epsilon)
-                        + log_factor
-                    )
-
-                u01 = rng.random()  # uniform in (0, 1)
-                if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
-                    population[i, :] = theta_prop
-                    u[i, :] = u_prop_buf
-                    rho[i, :] = rho_prop_buf
-                    logprior[i] = lprior_prop
-                    n_accept_tmp += 1
-            # END of inner loop over active particles
-
-        state.n_accept += n_accept_tmp  # careful here, avoid race conditions when parallelizing
+        state.n_accept += n_accept_tmp
 
         # ---------------------
         # Resample population if needed
-
         if state.n_accept >= (state.n_resampling + 1) * resample:
             population, u, rho, logprior, ess = resample_population(
                 population, u, rho, logprior, delta, rng
             )
-            # Local names 'population' and 'u' now refer to new objects created by resampling
-            # We must explicitly REATTACH the new objects to the population_state
+            # Reattach new objects after resampling
             population_state.population = population
             population_state.u = u
             population_state.rho = rho
@@ -477,7 +732,6 @@ def update_population(
 
         # ---------------------
         # Update proposal distribution and epsilon
-
         update_proposal(proposal, population)
 
         if state.algorithm == "multi_eps":
@@ -485,43 +739,22 @@ def update_population(
         else:
             state.epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
 
-        # ---------------------
-        # Update population statistics and print progress
-
         state.n_population_updates += 1
         state.n_simulation += n_particles
 
-        # if (not show_progressbar) and (show_checkpoint is not None) and ix % show_checkpoint == 0:
-        if (show_checkpoint is not None) and (
-            ix % show_checkpoint == 0 or ix == n_population_updates
-        ):
-            elapsed = (time.perf_counter_ns() - t_start) / 1e9
-            eta = elapsed / ix * (n_population_updates - ix)
-            eta_str = f"{eta:.2f} seconds" if eta > 1 else "< 1 second"
-            LOG.debug(
-                f"Update {ix}/{n_population_updates}  "
-                f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  ETA={eta_str}",
-            )
+        _record_checkpoint(
+            state, u, rho, ix, n_population_updates, t_start, checkpoint_history, show_checkpoint
+        )
 
-        # ---------------------
-        # Store histories
-        if ix % checkpoint_history == 0:
-            state.epsilon_history.append(state.epsilon.copy())
-            state.u_history.append(np.mean(u, axis=0))
-            state.rho_history.append(np.mean(rho, axis=0))
+    # END of main loop
 
-    # END of main loop over population updates
-
-    # In principle there is NO NEED to reassign population, u and rho to the population_state
-    # They are already the same objects.
-    # The following lines are therefore redundant (but cheap)
+    # Final reattach (redundant but cheap)
     population_state.population = population
     population_state.u = u
     population_state.rho = rho
     population_state.logprior = logprior
 
-    # ---------------------
-    # Make result pickle-safe / restart-friendly (closures don't serialize reliably)
+    # Make result pickle-safe (closures don't serialize reliably)
     state.cdfs_dist_prior = None
 
     LOG.info(
@@ -533,75 +766,32 @@ def update_population(
 
 
 # -------------------------------------------
-# Main
+# Main entry point
 # -------------------------------------------
 
 
-def sabc(
-    f_dist,
-    prior,
-    *args,
-    n_particles: int = 1000,
-    n_simulation: int = 10_000,
-    algorithm: str = "single_eps",
-    proposal: Proposal | None = None,
-    resample: int | None = None,
-    v: float = 1.0,
-    delta: float = 0.1,
-    checkpoint_history: int = 1,
-    show_progressbar: bool = True,
-    show_checkpoint: float | int | None = None,
-    seed: int | None = None,
-    rng: np.random.Generator | None = None,
-    **kwargs,
-) -> SABCResult:
+def sabc(config: SABCConfig, n_simulation: int = 10_000) -> SABCResult:
+    """Run the Simulated Annealing ABC algorithm.
 
-    if algorithm not in ("single_eps", "multi_eps"):
-        raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
+    Args:
+        config: Full SABC configuration (problem definition + algorithm parameters).
+        n_simulation: Total simulation budget (initialization + population updates).
 
-    if rng is None:
-        rng = np.random.default_rng(seed)
-
+    Returns:
+        ``SABCResult`` containing the posterior population and algorithm state.
+    """
     # ---------------------
     # Initialization
-
-    pop_state = initialization(
-        f_dist,
-        prior,
-        *args,
-        n_particles=n_particles,
-        n_simulation=n_simulation,
-        v=v,
-        delta=delta,
-        algorithm=algorithm,
-        rng=rng,
-        **kwargs,
-    )
+    pop_state = initialization(config, n_simulation)
 
     # ---------------------
     # Sampling / Population updates
-
     n_sim_remaining = n_simulation - pop_state.state.n_simulation
-    if n_sim_remaining < n_particles:
+    if n_sim_remaining < config.n_particles:
         warnings.warn(
             "`n_simulation` too small to update all particles at least once.",
             RuntimeWarning,
             stacklevel=1,
         )
 
-    return update_population(
-        pop_state,
-        f_dist,
-        prior,
-        *args,
-        n_simulation=n_sim_remaining,
-        v=v,
-        delta=delta,
-        proposal=proposal,
-        resample=resample,
-        checkpoint_history=checkpoint_history,
-        show_progressbar=show_progressbar,
-        show_checkpoint=show_checkpoint,
-        rng=rng,
-        **kwargs,
-    )
+    return update_population(pop_state, config, n_sim_remaining)
