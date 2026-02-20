@@ -6,11 +6,10 @@ from .fdist import DistanceMode
 
 try:
     import numba as nb
-except Exception as e:
-    nb = None
-    _IMPORT_ERROR = e
-else:
-    _IMPORT_ERROR = None
+
+    _has_numba = True
+except ImportError:
+    _has_numba = False
 
 
 def make_f_dist_numba(
@@ -22,8 +21,8 @@ def make_f_dist_numba(
     distance: DistanceMode = "abs",
     weights: np.ndarray | None = None,
 ):
-    if nb is None:
-        raise ImportError("Numba is not available.") from _IMPORT_ERROR
+    if not _has_numba:
+        raise ImportError("Numba is not available.")
 
     ss_obs = np.asarray(ss_obs, dtype=np.float64).reshape(-1)
     n_stats = ss_obs.size
