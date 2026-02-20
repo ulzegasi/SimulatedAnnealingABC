@@ -45,7 +45,6 @@
                 "davidanson.vscode-markdownlint",
                 "joshbolduc.commitlint",
                 "ms-python.python",
-                "ms-python.vscode-pylance",
                 "ms-toolsai.jupyter",
                 "redhat.vscode-yaml",
                 "streetsidesoftware.code-spell-checker",
