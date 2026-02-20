@@ -39,7 +39,7 @@
         "vscode": {
             // Add the IDs of extensions you want installed when the container is created.
             "extensions": [
-                // "astral-sh.ty",
+                "astral-sh.ty",
                 "charliermarsh.ruff",
                 "codezombiech.gitignore",
                 "davidanson.vscode-markdownlint",

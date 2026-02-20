@@ -1,6 +1,6 @@
 {
     "recommendations": [
-        // "astral-sh.ty",
+        "astral-sh.ty",
         "charliermarsh.ruff",
         "ms-python.python",
         "ms-python.vscode-pylance",

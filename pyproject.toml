@@ -13,17 +13,8 @@ dependencies = [
     "scipy",
 ]
 
-# [tool.pyright]
-# reportMissingImports = true
-# reportMissingTypeStubs = false
-# reportArgumentType = false
-# reportAttributeAccessIssue = false
-# reportCallIssue = false
-# reportIndexIssue = false
-# reportOperatorIssue = false
-
-[tool.black]
-line-length = 100
+[tool.ty.src]
+include = ["src"]
 
 [tool.ruff]
 # ruff is less lenient than pylint and does not make any exceptions
