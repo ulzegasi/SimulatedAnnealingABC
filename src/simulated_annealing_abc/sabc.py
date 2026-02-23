@@ -10,7 +10,7 @@ from typing import Callable
 import numpy as np
 from scipy.optimize import root_scalar
 
-from .cdf_estimators import build_cdf
+from .cdf_estimators import CDF1D, CDFMulti, build_cdf
 from .helper import track_progress
 from .proposals import (
     DifferentialEvolution,
@@ -104,7 +104,7 @@ class SABCState:
 
     # Fixed "prior-distance" reference used to build the CDF mapping
     rho_prior: np.ndarray  # prior distances computed at initialization from prior samples
-    cdfs_dist_prior: Callable[[np.ndarray], np.ndarray] | None  # callable function or None
+    cdfs_dist_prior: CDF1D | CDFMulti  # picklable CDF mapping
     # function G in Albert et al., Statistics and Computing 25, 2015
 
     n_simulation: int  # number of simulations
@@ -122,6 +122,7 @@ class SABCResult:
     rho: np.ndarray  # user-defined distances
     logprior: np.ndarray  # log prior values
     state: SABCState
+    config: SABCConfig
 
 
 # -------------------------------------------
@@ -596,7 +597,9 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
         n_resampling=1,
         n_population_updates=0,
     )
-    return SABCResult(population=population, u=u, rho=rho_prior, logprior=logprior, state=state)
+    return SABCResult(
+        population=population, u=u, rho=rho_prior, logprior=logprior, state=state, config=config
+    )
 
 
 # -------------------------------------------
@@ -606,19 +609,18 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
 
 def update_population(
     population_state: SABCResult,
-    config: SABCConfig,
     n_simulation: int,
 ) -> SABCResult:
     """Update population using MCMC proposals, resampling, and annealing.
 
     Args:
         population_state: Current SABC result (from ``initialization()`` or a previous run).
-        config: Full SABC configuration.
         n_simulation: Simulation budget for this update round.
 
     Returns:
         Updated ``SABCResult`` (same object, mutated in-place).
     """
+    config = population_state.config
     f_dist = config.f_dist
     prior = config.prior
     v = config.v
@@ -649,11 +651,6 @@ def update_population(
     # We will need to reattach them (SEE BELOW)
     n_particles = population.shape[0]
     n_stats = u.shape[1]
-
-    # ---------------------
-    # Rebuild CDF mapping if resuming from a serialized checkpoint
-    if state.cdfs_dist_prior is None:
-        state.cdfs_dist_prior = build_cdf(state.rho_prior)
 
     # ---------------------
     # Set up proposal mechanism and resampling interval, if not provided
@@ -754,9 +751,6 @@ def update_population(
     population_state.rho = rho
     population_state.logprior = logprior
 
-    # Make result pickle-safe (closures don't serialize reliably)
-    state.cdfs_dist_prior = None
-
     LOG.info(
         f"All particles have been updated {n_population_updates} times "
         f"in {(time.perf_counter_ns() - t_start) / 1e9:.2f} seconds."
@@ -794,4 +788,4 @@ def sabc(config: SABCConfig, n_simulation: int = 10_000) -> SABCResult:
             stacklevel=1,
         )
 
-    return update_population(pop_state, config, n_sim_remaining)
+    return update_population(pop_state, n_sim_remaining)

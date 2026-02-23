@@ -1,4 +1,6 @@
-"""cdf_estimators.py."""
+"""cdf_estimators.py — picklable empirical CDF mappings for SABC."""
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -13,7 +15,8 @@ def _prepare_cdf_1d(x: np.ndarray, a: float = 1.5):
     NOTE: WIKIPEDIA def. of Empirical CDF (eCDF)
     In statistics, an empirical cumulative distribution function (eCDF)
     is the distribution function associated with the empirical measure of a sample.
-    This cumulative distribution function is a step function that jumps up by 1/n at each of the n data points.
+    This cumulative distribution function is a step function that jumps up by
+    1/n at each of the n data points.
     Its value at any specified value of the measured variable is the fraction
     of observations of the measured variable that are less than or equal to the specified value.
 
@@ -48,29 +51,110 @@ def _prepare_cdf_1d(x: np.ndarray, a: float = 1.5):
     return values, probs
 
 
-def build_cdf(x: np.ndarray, a: float = 1.5):
-    """Construct empirical CDF(s) for prior distances.
+# ======================================================================
+# Picklable callable classes
+# ======================================================================
+
+
+@dataclass
+class CDF1D:
+    """Picklable CDF mapping for a single summary statistic.
+
+    All fields are plain NumPy arrays — natively picklable.
+
+    Args:
+        values: Sorted distance knots for interpolation.
+        probs: Corresponding probability knots in [0, 1].
+    """
+
+    values: np.ndarray
+    probs: np.ndarray
+
+    def __call__(self, d) -> np.ndarray:
+        """Evaluate the CDF at distance(s) ``d``.
+
+        Args:
+            d: Scalar or array of distances.
+
+        Returns:
+            CDF values in [0, 1].
+        """
+        d = np.asarray(d, dtype=float)
+        return np.interp(d, self.values, self.probs, left=0.0, right=1.0)
+
+
+@dataclass
+class CDFMulti:
+    """Picklable CDF mapping for multiple summary statistics.
+
+    Stores one interpolation table per statistic. All fields are plain
+    lists of NumPy arrays — natively picklable.
+
+    Args:
+        values_list: Per-statistic sorted distance knots.
+        probs_list: Per-statistic probability knots in [0, 1].
+        n_stats: Number of summary statistics.
+    """
+
+    values_list: list[np.ndarray]
+    probs_list: list[np.ndarray]
+    n_stats: int
+
+    def __call__(self, rho: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+        """Evaluate CDF for each statistic.
+
+        Args:
+            rho: Distance vector of shape ``(n_stats,)``.
+            out: Optional pre-allocated output buffer of shape ``(n_stats,)``.
+
+        Returns:
+            CDF values in [0, 1] for each statistic.
+        """
+        rho = np.asarray(rho, dtype=float).reshape(-1)
+        if rho.size != self.n_stats:
+            raise ValueError(f"Expected rho of length {self.n_stats}, got {rho.size}.")
+
+        if out is None:
+            out = np.empty(self.n_stats, dtype=float)
+        elif out.shape != (self.n_stats,):
+            raise ValueError(f"out must have shape ({self.n_stats},), got {out.shape}.")
+
+        interp = np.interp
+        vlist = self.values_list
+        plist = self.probs_list
+
+        for j in range(self.n_stats):
+            out[j] = interp(rho[j], vlist[j], plist[j], left=0.0, right=1.0)
+
+        return out
+
+
+# ======================================================================
+# Factory function (public API, backward-compatible)
+# ======================================================================
+
+
+def build_cdf(x: np.ndarray, a: float = 1.5) -> CDF1D | CDFMulti:
+    """Construct picklable empirical CDF(s) for prior distances.
 
     One CDF is constructed for each statistic.
-    Returns a callable f(rho, out=None):
-      - rho: shape (n_stats,)
-      - out: optional preallocated array shape (n_stats,)
+    Returns a callable ``f(rho, out=None)``:
+      - rho: shape ``(n_stats,)``
+      - out: optional preallocated array shape ``(n_stats,)``
+
+    Args:
+        x: Distance array — 1-D for a single statistic, or 2-D ``(n_particles, n_stats)``.
+        a: Inflation factor for the maximum distance knot (default 1.5).
+
+    Returns:
+        ``CDF1D`` for a single statistic, ``CDFMulti`` for multiple statistics.
     """
-    # Here x is the 'distances_prior' matrix (n_particles, n_stats)
-    # This function selects all distances (for all particles)
-    # and constructs a cdf function for each summary stat
     x = np.asarray(x, dtype=float)
 
     # 1D case (single stat): return scalar cdf(d)
-    # x is a vector of distances for one stat
     if x.ndim == 1:
         values, probs = _prepare_cdf_1d(x, a=a)
-
-        def cdf_1d(d):
-            d = np.asarray(d, dtype=float)
-            return np.interp(d, values, probs, left=0.0, right=1.0)
-
-        return cdf_1d
+        return CDF1D(values=values, probs=probs)
 
     # 2D case, (n_particles, n_stats)
     if x.ndim != 2:
@@ -78,30 +162,8 @@ def build_cdf(x: np.ndarray, a: float = 1.5):
 
     _, n_stats = x.shape
 
-    # len(tables) = n_stats
-    # Each element is a tuple (values, probs) for one stat
     tables = [_prepare_cdf_1d(x[:, j], a=a) for j in range(n_stats)]
     values_list = [t[0] for t in tables]
     probs_list = [t[1] for t in tables]
 
-    # rho is a row of the distance matrix, with size = number of stats
-    def f(rho, out=None):
-        rho = np.asarray(rho, dtype=float).reshape(-1)
-        if rho.size != n_stats:
-            raise ValueError(f"Expected rho of length {n_stats}, got {rho.size}.")
-
-        if out is None:
-            out = np.empty(n_stats, dtype=float)
-        elif out.shape != (n_stats,):
-            raise ValueError(f"out must have shape ({n_stats},), got {out.shape}.")
-
-        interp = np.interp
-        vlist = values_list
-        plist = probs_list
-
-        for j in range(n_stats):
-            out[j] = interp(rho[j], vlist[j], plist[j], left=0.0, right=1.0)
-
-        return out
-
-    return f
+    return CDFMulti(values_list=values_list, probs_list=probs_list, n_stats=n_stats)
