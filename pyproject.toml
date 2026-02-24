@@ -34,9 +34,14 @@ select = [
     "S", # bandit
     "W",  # pycodestyle
 ]
-# ignore = [
-#     "D104", # Missing docstring in public package (__init__.py)
-# ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "examples"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: end-to-end integration tests",
+]
+addopts = "-ra -q"

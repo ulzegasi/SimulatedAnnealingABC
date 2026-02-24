@@ -16,5 +16,7 @@ dependencies:
   - numba
   - matplotlib
   - tqdm
+  - pytest
+  - jupytext
   - pip:
     - scalene

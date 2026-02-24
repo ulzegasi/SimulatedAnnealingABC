@@ -69,6 +69,37 @@ The code currently targets Python ≥ 3.14.
 
 ---
 
+## Development & Testing
+
+Setting up the devcontainer will install `environment.sabc-dev.yml`.
+So this environment should be used.
+
+### Running Tests
+
+```bash
+# Fast unit tests (seconds)
+pytest
+
+# Integration tests (minutes)
+pytest -m slow
+
+# Integration tests with visualization
+VISUALIZE=1 pytest -m slow
+```
+
+### Jupyter Notebooks
+
+Example notebooks are maintained as `.py` files in `examples/` using jupytext's `percent` format.
+To generate `.ipynb` notebooks:
+
+```bash
+jupytext --to ipynb examples/test_*.py
+```
+
+The `.py` files are the source of truth—edit those directly.
+
+---
+
 ## Basic Usage
 
 We consider a simple toy problem where the observed data (y_obs) are generated from a normal distribution with unknown mean and standard deviation.
