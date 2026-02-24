@@ -519,6 +519,285 @@ def _record_checkpoint(
         state.rho_history.append(np.mean(rho, axis=0))
 
 
+def _iteration_tail(
+    population_state: SABCResult,
+    population: np.ndarray,
+    u: np.ndarray,
+    rho: np.ndarray,
+    logprior: np.ndarray,
+    n_accept_iter: int,
+    proposals: list[Proposal],
+    ix: int,
+    n_population_updates: int,
+    t_start: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Per-iteration bookkeeping shared by serial and parallel modes.
+
+    Handles: accept counter, conditional resampling, proposal update,
+    epsilon update, state counter increments, and checkpoint recording.
+
+    Args:
+        population_state: The mutable result container.
+        population: Current population array (may be rebound by resampling).
+        u: Transformed distances (may be rebound by resampling).
+        rho: Raw distances (may be rebound by resampling).
+        logprior: Log prior values (may be rebound by resampling).
+        n_accept_iter: Number of accepted proposals this iteration.
+        proposals: All proposal instances to update (length 1 for serial, 3 for parallel).
+        ix: Current iteration index (1-based).
+        n_population_updates: Total number of iterations.
+        t_start: Start time from ``time.perf_counter_ns()``.
+
+    Returns:
+        Potentially rebound (population, u, rho, logprior) arrays.
+    """
+    config = population_state.config
+    state = population_state.state
+
+    state.n_accept += n_accept_iter
+
+    # Resample if needed
+    resample = config.resample if config.resample is not None else 2 * config.n_particles
+    if state.n_accept >= (state.n_resampling + 1) * resample:
+        population, u, rho, logprior, _ess = resample_population(
+            population, u, rho, logprior, config.delta, config.rng
+        )
+        population_state.population = population
+        population_state.u = u
+        population_state.rho = rho
+        population_state.logprior = logprior
+        state.n_resampling += 1
+
+    # Update all proposal instances from the full population
+    for prop in proposals:
+        update_proposal(prop, population)
+
+    # Update epsilon
+    if state.algorithm == "multi_eps":
+        state.epsilon = update_epsilon_multi_eps(u, config.v)
+    else:
+        state.epsilon = update_epsilon_single_eps(float(np.mean(u)), config.v)
+
+    state.n_population_updates += 1
+    state.n_simulation += config.n_particles
+
+    _record_checkpoint(
+        state,
+        u,
+        rho,
+        ix,
+        n_population_updates,
+        t_start,
+        config.checkpoint_history,
+        config.show_checkpoint if config.show_checkpoint is not None else 100,
+    )
+
+    return population, u, rho, logprior
+
+
+def _run_serial_loop(
+    population_state: SABCResult,
+    n_population_updates: int,
+    t_start: int,
+) -> None:
+    """Run the main MCMC loop in serial mode.
+
+    Batch 2 sees batch 1's freshly updated state each iteration.
+
+    Args:
+        population_state: The mutable result container.
+        n_population_updates: Number of iterations to run.
+        t_start: Start time from ``time.perf_counter_ns()``.
+    """
+    config = population_state.config
+    state = population_state.state
+    population = population_state.population
+    u = population_state.u
+    rho = population_state.rho
+    logprior = population_state.logprior
+    n_particles = population.shape[0]
+    n_stats = u.shape[1]
+    proposal = config.proposal
+
+    mid = n_particles // 2
+    batch_size = max(mid, n_particles - mid)
+    rho_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
+    u_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
+
+    for ix in track_progress(
+        range(1, n_population_updates + 1), show_progressbar=config.show_progressbar
+    ):
+        inv_epsilon = 1.0 / state.epsilon
+
+        batch_1 = slice(0, mid)
+        batch_2 = slice(mid, n_particles)
+
+        n_accept_iter = 0
+        for active, inactive in ((batch_1, batch_2), (batch_2, batch_1)):
+            pop_inactive = population[inactive, :]
+            n_accept_iter += _update_batch(
+                active,
+                population,
+                u,
+                rho,
+                logprior,
+                pop_inactive,
+                proposal,
+                config.prior,
+                config.f_dist,
+                state.cdfs_dist_prior,
+                inv_epsilon,
+                rho_prop_buf,
+                u_prop_buf,
+                config.rng,
+            )
+
+        population, u, rho, logprior = _iteration_tail(
+            population_state,
+            population,
+            u,
+            rho,
+            logprior,
+            n_accept_iter,
+            [proposal],
+            ix,
+            n_population_updates,
+            t_start,
+        )
+
+
+def _run_parallel_loop(
+    population_state: SABCResult,
+    n_population_updates: int,
+    t_start: int,
+) -> None:
+    """Run the main MCMC loop with concurrent half-batch updates.
+
+    Both halves see a stale snapshot of the other half (emcee-style).
+
+    Args:
+        population_state: The mutable result container.
+        n_population_updates: Number of iterations to run.
+        t_start: Start time from ``time.perf_counter_ns()``.
+    """
+    config = population_state.config
+    state = population_state.state
+    population = population_state.population
+    u = population_state.u
+    rho = population_state.rho
+    logprior = population_state.logprior
+    n_particles = population.shape[0]
+    n_stats = u.shape[1]
+
+    proposal = config.proposal
+    f_dist = config.f_dist
+    rng = config.rng
+
+    if not hasattr(proposal, "clone"):
+        raise TypeError(
+            "parallel_batches=True requires proposal.clone(rng) method. "
+            f"{type(proposal).__name__} does not implement clone()."
+        )
+    if not hasattr(f_dist, "clone"):
+        raise TypeError(
+            "parallel_batches=True requires f_dist.clone(seed) method. "
+            f"{type(f_dist).__name__} does not implement clone()."
+        )
+
+    # Spawn independent child RNG streams for each half-batch
+    parent_entropy = rng.bit_generator.seed_seq  # type: ignore[union-attr]
+    child_seeds = parent_entropy.spawn(2)
+    rng_1 = np.random.default_rng(child_seeds[0])
+    rng_2 = np.random.default_rng(child_seeds[1])
+
+    # Spawn independent child RNG streams for proposals
+    prop_seeds = parent_entropy.spawn(2)
+    proposal_1 = proposal.clone(np.random.default_rng(prop_seeds[0]))
+    proposal_2 = proposal.clone(np.random.default_rng(prop_seeds[1]))
+
+    # Spawn independent f_dist clones
+    fdist_seeds = parent_entropy.spawn(2)
+    f_dist_1 = f_dist.clone(seed=int(fdist_seeds[0].generate_state(1)[0]))
+    f_dist_2 = f_dist.clone(seed=int(fdist_seeds[1].generate_state(1)[0]))
+
+    mid = n_particles // 2
+    batch_size = max(mid, n_particles - mid)
+
+    # Per-half scratch buffers (no sharing between threads)
+    rho_buf_1 = np.empty((batch_size, n_stats), dtype=np.float64)
+    u_buf_1 = np.empty((batch_size, n_stats), dtype=np.float64)
+    rho_buf_2 = np.empty((batch_size, n_stats), dtype=np.float64)
+    u_buf_2 = np.empty((batch_size, n_stats), dtype=np.float64)
+
+    try:
+        pool = ThreadPoolExecutor(max_workers=2)
+        for ix in track_progress(
+            range(1, n_population_updates + 1), show_progressbar=config.show_progressbar
+        ):
+            inv_epsilon = 1.0 / state.epsilon
+
+            batch_1 = slice(0, mid)
+            batch_2 = slice(mid, n_particles)
+
+            # Snapshot BOTH halves before either update begins
+            snap_1 = population[batch_1, :].copy()
+            snap_2 = population[batch_2, :].copy()
+
+            # Submit both half-batch updates concurrently
+            # batch_1 uses snap_2 as its "inactive" population (and vice versa)
+            fut_1 = pool.submit(
+                _update_batch,
+                batch_1,
+                population,
+                u,
+                rho,
+                logprior,
+                snap_2,
+                proposal_1,
+                config.prior,
+                f_dist_1,
+                state.cdfs_dist_prior,
+                inv_epsilon,
+                rho_buf_1,
+                u_buf_1,
+                rng_1,
+            )
+            fut_2 = pool.submit(
+                _update_batch,
+                batch_2,
+                population,
+                u,
+                rho,
+                logprior,
+                snap_1,
+                proposal_2,
+                config.prior,
+                f_dist_2,
+                state.cdfs_dist_prior,
+                inv_epsilon,
+                rho_buf_2,
+                u_buf_2,
+                rng_2,
+            )
+
+            n_accept_iter = fut_1.result() + fut_2.result()
+
+            population, u, rho, logprior = _iteration_tail(
+                population_state,
+                population,
+                u,
+                rho,
+                logprior,
+                n_accept_iter,
+                [proposal_1, proposal_2, proposal],
+                ix,
+                n_population_updates,
+                t_start,
+            )
+    finally:
+        pool.shutdown(wait=False)
+
+
 # -------------------------------------------
 # Initialization
 # -------------------------------------------
@@ -626,48 +905,21 @@ def update_population(
         Updated ``SABCResult`` (same object, mutated in-place).
     """
     config = population_state.config
-    f_dist = config.f_dist
-    prior = config.prior
-    v = config.v
-    delta = config.delta
     proposal = config.proposal
-    resample = config.resample
-    checkpoint_history = config.checkpoint_history
-    show_progressbar = config.show_progressbar
-    show_checkpoint = config.show_checkpoint
     rng = config.rng
-    parallel_batches = config.parallel_batches
-
-    if show_checkpoint is None:
-        show_checkpoint = 100
-
-    # ---------------------
-    # Extract variables from population_state for easier access
-    # Updates inside the loop will mutate the original objects in population_state
-    state = population_state.state
-    population = population_state.population
-    u = population_state.u
-    rho = population_state.rho
-    logprior = population_state.logprior
-    # population, u, rho and
-    # population_state.population, population_state.u, population_state.rho
-    # refer to the same objects in memory, respectively.
-    # Any in-place modification (e.g., population[i] = ...) affects both. Similarly for u and rho.
-    # BE CAREFUL: Resampling will rebind the local names 'population' and 'u' to new objects
-    # We will need to reattach them (SEE BELOW)
-    n_particles = population.shape[0]
-    n_stats = u.shape[1]
+    n_particles = population_state.population.shape[0]
 
     # ---------------------
     # Set up proposal mechanism and resampling interval, if not provided
     if proposal is None:
-        n_para = population.shape[1]
+        n_para = population_state.population.shape[1]
         proposal = DifferentialEvolution(n_para=n_para, rng=rng)
-    if resample is None:
-        resample = 2 * n_particles
+        config.proposal = proposal
+    if config.resample is None:
+        config.resample = 2 * n_particles
 
     # Estimate jump covariance from current population
-    update_proposal(proposal, population)
+    update_proposal(proposal, population_state.population)
 
     # ---------------------
     # Each population update requires n_particles simulations
@@ -684,227 +936,13 @@ def update_population(
     # ---------------------
     t_start = time.perf_counter_ns()
 
-    # Batch scratch buffers — sized for the larger half-batch
-    mid = n_particles // 2
-    batch_size = max(mid, n_particles - mid)
-
-    if not parallel_batches:
-        # ------------------------------------------------------------------
-        # SERIAL MODE (default): batch_2 sees batch_1's freshly updated state
-        # ------------------------------------------------------------------
-        rho_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
-        u_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
-
-        for ix in track_progress(
-            range(1, n_population_updates + 1), show_progressbar=show_progressbar
-        ):
-            inv_epsilon = 1.0 / state.epsilon
-
-            batch_1 = slice(0, mid)
-            batch_2 = slice(mid, n_particles)
-
-            n_accept_tmp = 0
-            for active, inactive in ((batch_1, batch_2), (batch_2, batch_1)):
-                pop_inactive = population[inactive, :]
-                n_accept_tmp += _update_batch(
-                    active,
-                    population,
-                    u,
-                    rho,
-                    logprior,
-                    pop_inactive,
-                    proposal,
-                    prior,
-                    f_dist,
-                    state.cdfs_dist_prior,
-                    inv_epsilon,
-                    rho_prop_buf,
-                    u_prop_buf,
-                    rng,
-                )
-
-            state.n_accept += n_accept_tmp
-
-            # Resample population if needed
-            if state.n_accept >= (state.n_resampling + 1) * resample:
-                population, u, rho, logprior, _ess = resample_population(
-                    population, u, rho, logprior, delta, rng
-                )
-                population_state.population = population
-                population_state.u = u
-                population_state.rho = rho
-                population_state.logprior = logprior
-                state.n_resampling += 1
-
-            # Update proposal distribution and epsilon
-            update_proposal(proposal, population)
-
-            if state.algorithm == "multi_eps":
-                state.epsilon = update_epsilon_multi_eps(u, v)
-            else:
-                state.epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
-
-            state.n_population_updates += 1
-            state.n_simulation += n_particles
-
-            _record_checkpoint(
-                state,
-                u,
-                rho,
-                ix,
-                n_population_updates,
-                t_start,
-                checkpoint_history,
-                show_checkpoint,
-            )
-
+    if config.parallel_batches:
+        _run_parallel_loop(population_state, n_population_updates, t_start)
     else:
-        # ------------------------------------------------------------------
-        # PARALLEL MODE: emcee-style concurrent half-batch updates.
-        # Both halves see a stale snapshot of the other half (taken before
-        # either update begins).  This changes MCMC dynamics compared to
-        # serial mode but is statistically valid.
-        #
-        # Thread safety:
-        # - Each half writes ONLY to its own slice of population/u/rho/logprior.
-        #   The slices are non-overlapping (0..mid vs mid..n_particles).
-        # - cdfs_dist_prior and inv_epsilon are read-only.
-        # - prior.logpdf() must be stateless.
-        # - Each half gets its own proposal clone, f_dist clone, RNG, and
-        #   scratch buffers — no shared mutable state between threads.
-        # ------------------------------------------------------------------
-        if not hasattr(proposal, "clone"):
-            raise TypeError(
-                "parallel_batches=True requires proposal.clone(rng) method. "
-                f"{type(proposal).__name__} does not implement clone()."
-            )
-        if not hasattr(f_dist, "clone"):
-            raise TypeError(
-                "parallel_batches=True requires f_dist.clone(seed) method. "
-                f"{type(f_dist).__name__} does not implement clone()."
-            )
+        _run_serial_loop(population_state, n_population_updates, t_start)
 
-        # Spawn independent child RNG streams for each half-batch
-        parent_entropy = rng.bit_generator.seed_seq  # type: ignore[union-attr]
-        child_seeds = parent_entropy.spawn(2)
-        rng_1 = np.random.default_rng(child_seeds[0])
-        rng_2 = np.random.default_rng(child_seeds[1])
-
-        # Spawn independent child RNG streams for proposals
-        prop_seeds = parent_entropy.spawn(2)
-        proposal_1 = proposal.clone(np.random.default_rng(prop_seeds[0]))
-        proposal_2 = proposal.clone(np.random.default_rng(prop_seeds[1]))
-
-        # Spawn independent f_dist clones
-        fdist_seeds = parent_entropy.spawn(2)
-        f_dist_1 = f_dist.clone(seed=int(fdist_seeds[0].generate_state(1)[0]))
-        f_dist_2 = f_dist.clone(seed=int(fdist_seeds[1].generate_state(1)[0]))
-
-        # Per-half scratch buffers (no sharing between threads)
-        rho_buf_1 = np.empty((batch_size, n_stats), dtype=np.float64)
-        u_buf_1 = np.empty((batch_size, n_stats), dtype=np.float64)
-        rho_buf_2 = np.empty((batch_size, n_stats), dtype=np.float64)
-        u_buf_2 = np.empty((batch_size, n_stats), dtype=np.float64)
-
-        try:
-            pool = ThreadPoolExecutor(max_workers=2)
-            for ix in track_progress(
-                range(1, n_population_updates + 1), show_progressbar=show_progressbar
-            ):
-                inv_epsilon = 1.0 / state.epsilon
-
-                batch_1 = slice(0, mid)
-                batch_2 = slice(mid, n_particles)
-
-                # Snapshot BOTH halves before either update begins
-                snap_1 = population[batch_1, :].copy()
-                snap_2 = population[batch_2, :].copy()
-
-                # Submit both half-batch updates concurrently
-                # batch_1 uses snap_2 as its "inactive" population (and vice versa)
-                fut_1 = pool.submit(
-                    _update_batch,
-                    batch_1,
-                    population,
-                    u,
-                    rho,
-                    logprior,
-                    snap_2,  # stale snapshot of the other half
-                    proposal_1,
-                    prior,
-                    f_dist_1,
-                    state.cdfs_dist_prior,
-                    inv_epsilon,
-                    rho_buf_1,
-                    u_buf_1,
-                    rng_1,
-                )
-                fut_2 = pool.submit(
-                    _update_batch,
-                    batch_2,
-                    population,
-                    u,
-                    rho,
-                    logprior,
-                    snap_1,  # stale snapshot of the other half
-                    proposal_2,
-                    prior,
-                    f_dist_2,
-                    state.cdfs_dist_prior,
-                    inv_epsilon,
-                    rho_buf_2,
-                    u_buf_2,
-                    rng_2,
-                )
-
-                n_accept_tmp = fut_1.result() + fut_2.result()
-                state.n_accept += n_accept_tmp
-
-                # Resample population if needed
-                if state.n_accept >= (state.n_resampling + 1) * resample:
-                    population, u, rho, logprior, _ess = resample_population(
-                        population, u, rho, logprior, delta, rng
-                    )
-                    population_state.population = population
-                    population_state.u = u
-                    population_state.rho = rho
-                    population_state.logprior = logprior
-                    state.n_resampling += 1
-
-                # Update BOTH proposal clones from the full population
-                update_proposal(proposal_1, population)
-                update_proposal(proposal_2, population)
-                # Also update the original so it stays in sync for post-loop use
-                update_proposal(proposal, population)
-
-                if state.algorithm == "multi_eps":
-                    state.epsilon = update_epsilon_multi_eps(u, v)
-                else:
-                    state.epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
-
-                state.n_population_updates += 1
-                state.n_simulation += n_particles
-
-                _record_checkpoint(
-                    state,
-                    u,
-                    rho,
-                    ix,
-                    n_population_updates,
-                    t_start,
-                    checkpoint_history,
-                    show_checkpoint,
-                )
-        finally:
-            pool.shutdown(wait=False)
-
-    # END of main loop
-
-    # Final reattach (redundant but cheap)
-    population_state.population = population
-    population_state.u = u
-    population_state.rho = rho
-    population_state.logprior = logprior
+    # Final reattach (redundant but cheap — resampling may have rebound arrays)
+    # Already handled inside _iteration_tail, but defensive.
 
     LOG.info(
         f"All particles have been updated {n_population_updates} times "
