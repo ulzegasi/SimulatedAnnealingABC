@@ -165,18 +165,26 @@ if __name__ == "__main__":
     stats_fn(y_obs.reshape(1, -1), ss_obs)
     ss_obs = ss_obs.ravel()
 
-    f_dist = make_f_dist(
-        n_samples=1000,
-        ss_obs=ss_obs,
-        simulator=simulator,
-        stats_fn=stats_fn,
-        seed=123,  # simulator-level randomness
-        distance="abs",  # distance per statistic: abs(ss_sim-ss_obs)
-        fast=args["use_numba"],
-        simulator_nb=simulator_nb,
-        stats_fn_nb=stats_fn_nb,
-        n_workers=args["fdist_workers"],
-    )
+    if args["use_numba"]:
+        f_dist = make_f_dist(
+            n_samples=1000,
+            ss_obs=ss_obs,
+            simulator=simulator_nb,
+            stats_fn=stats_fn_nb,
+            distance="abs",
+            use_numba=True,
+            n_workers=args["fdist_workers"],
+        )
+    else:
+        f_dist = make_f_dist(
+            n_samples=1000,
+            ss_obs=ss_obs,
+            simulator=simulator,
+            stats_fn=stats_fn,
+            seed=123,
+            distance="abs",
+            n_workers=args["fdist_workers"],
+        )
 
     rng_alg = np.random.default_rng(18)
     rng_prop = np.random.default_rng(22)
