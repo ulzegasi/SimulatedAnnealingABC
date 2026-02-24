@@ -1,4 +1,4 @@
-"""cdf_estimators.py — picklable empirical CDF mappings for SABC."""
+"""cdf_estimators.py — picklable empirical CDF mappings for SABC (batch mode)."""
 
 from dataclasses import dataclass
 
@@ -52,7 +52,7 @@ def _prepare_cdf_1d(x: np.ndarray, a: float = 1.5):
 
 
 # ======================================================================
-# Picklable callable classes
+# Picklable callable classes (batch mode)
 # ======================================================================
 
 
@@ -62,6 +62,8 @@ class CDF1D:
 
     All fields are plain NumPy arrays — natively picklable.
 
+    Accepts both scalar and array inputs.
+
     Args:
         values: Sorted distance knots for interpolation.
         probs: Corresponding probability knots in [0, 1].
@@ -70,22 +72,32 @@ class CDF1D:
     values: np.ndarray
     probs: np.ndarray
 
-    def __call__(self, d) -> np.ndarray:
+    def __call__(
+        self,
+        d: np.ndarray,
+        out: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Evaluate the CDF at distance(s) ``d``.
 
         Args:
-            d: Scalar or array of distances.
+            d: Scalar, 1-D, or 2-D ``(n_batch_particles, 1)`` array of distances.
+            out: Optional pre-allocated output buffer (same shape as result).
 
         Returns:
             CDF values in [0, 1].
         """
         d = np.asarray(d, dtype=float)
-        return np.interp(d, self.values, self.probs, left=0.0, right=1.0)
+        result = np.interp(d.ravel(), self.values, self.probs, left=0.0, right=1.0)
+        result = result.reshape(d.shape)
+        if out is not None:
+            np.copyto(out, result.reshape(out.shape))
+            return out
+        return result
 
 
 @dataclass
 class CDFMulti:
-    """Picklable CDF mapping for multiple summary statistics.
+    """Picklable CDF mapping for multiple summary statistics (batch mode).
 
     Stores one interpolation table per statistic. All fields are plain
     lists of NumPy arrays — natively picklable.
@@ -100,37 +112,50 @@ class CDFMulti:
     probs_list: list[np.ndarray]
     n_stats: int
 
-    def __call__(self, rho: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
-        """Evaluate CDF for each statistic.
+    def __call__(
+        self,
+        rho: np.ndarray,
+        out: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Evaluate CDF for each statistic across a batch of particles.
 
         Args:
-            rho: Distance vector of shape ``(n_stats,)``.
-            out: Optional pre-allocated output buffer of shape ``(n_stats,)``.
+            rho: Distance array of shape ``(n_batch_particles, n_stats)`` or ``(n_stats,)``.
+            out: Optional pre-allocated output buffer, shape ``(n_batch_particles, n_stats)``.
 
         Returns:
-            CDF values in [0, 1] for each statistic.
+            CDF values in [0, 1], shape ``(n_batch_particles, n_stats)``.
         """
-        rho = np.asarray(rho, dtype=float).reshape(-1)
-        if rho.size != self.n_stats:
-            raise ValueError(f"Expected rho of length {self.n_stats}, got {rho.size}.")
+        rho = np.asarray(rho, dtype=float)
+        squeezed = False
+        if rho.ndim == 1:
+            rho = rho.reshape(1, -1)
+            squeezed = True
 
+        if rho.shape[1] != self.n_stats:
+            raise ValueError(f"Expected rho with {self.n_stats} columns, got {rho.shape[1]}.")
+
+        n_batch_particles = rho.shape[0]
         if out is None:
-            out = np.empty(self.n_stats, dtype=float)
-        elif out.shape != (self.n_stats,):
-            raise ValueError(f"out must have shape ({self.n_stats},), got {out.shape}.")
+            out = np.empty((n_batch_particles, self.n_stats), dtype=float)
+        elif out.shape != (n_batch_particles, self.n_stats):
+            raise ValueError(
+                f"out must have shape ({n_batch_particles}, {self.n_stats}), got {out.shape}."
+            )
 
-        interp = np.interp
         vlist = self.values_list
         plist = self.probs_list
 
         for j in range(self.n_stats):
-            out[j] = interp(rho[j], vlist[j], plist[j], left=0.0, right=1.0)
+            out[:, j] = np.interp(rho[:, j], vlist[j], plist[j], left=0.0, right=1.0)
 
+        if squeezed:
+            return out.reshape(self.n_stats)
         return out
 
 
 # ======================================================================
-# Factory function (public API, backward-compatible)
+# Factory function (public API)
 # ======================================================================
 
 
@@ -139,8 +164,8 @@ def build_cdf(x: np.ndarray, a: float = 1.5) -> CDF1D | CDFMulti:
 
     One CDF is constructed for each statistic.
     Returns a callable ``f(rho, out=None)``:
-      - rho: shape ``(n_stats,)``
-      - out: optional preallocated array shape ``(n_stats,)``
+      - rho: shape ``(batch, n_stats)`` or ``(n_stats,)``
+      - out: optional preallocated array shape ``(batch, n_stats)``
 
     Args:
         x: Distance array — 1-D for a single statistic, or 2-D ``(n_particles, n_stats)``.

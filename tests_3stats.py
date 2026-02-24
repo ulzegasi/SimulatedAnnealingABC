@@ -38,6 +38,7 @@ from scipy.stats import gaussian_kde, norm
 from simulated_annealing_abc import (
     DifferentialEvolution,
     SABCConfig,
+    make_f_dist,
     sabc,
     save_sabc_result,
     update_population,
@@ -64,9 +65,9 @@ np.random.seed(1822)
 # -------------------------
 true_mu = 10.0
 true_sigma = 15.0
-num_samples = 1000
+n_samples = 1000
 
-y_obs = np.random.normal(true_mu, true_sigma, size=num_samples)
+y_obs = np.random.normal(true_mu, true_sigma, size=n_samples)
 
 # %%
 # Plot the observed data and true distribution
@@ -203,18 +204,35 @@ plt.show()
 
 
 class Prior:
-    """Independent Uniform prior for (mu, sigma)."""
+    """Independent Uniform prior for (mu, sigma).
 
-    def rvs(self, rng: np.random.Generator):
-        mu = rng.uniform(mu_min, mu_max)
-        sigma = rng.uniform(sigma_min, sigma_max)
-        return np.array([mu, sigma], dtype=float)
+    Batch API:
+      - ``rvs(rng, size=n_particles)`` -> ``(n_particles, 2)``
+      - ``logpdf(theta_batch)`` -> ``(n_particles,)``  where ``theta_batch`` is ``(n_particles, 2)``
+    """
 
-    def logpdf(self, theta):
-        mu, sigma = theta
-        if (mu_min <= mu <= mu_max) and (sigma_min <= sigma <= sigma_max):
-            return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
-        return -np.inf
+    def rvs(self, rng: np.random.Generator, size: int = 1) -> np.ndarray:
+        """Draw ``size`` samples from the prior, returning shape ``(size, 2)``."""
+        mu = rng.uniform(mu_min, mu_max, size=size)
+        sigma = rng.uniform(sigma_min, sigma_max, size=size)
+        return np.column_stack([mu, sigma])
+
+    def logpdf(self, theta: np.ndarray) -> np.ndarray:
+        """Evaluate log-prior for a batch of parameters.
+
+        Args:
+            theta: Parameter array of shape ``(n_particles, 2)``.
+
+        Returns:
+            Log-prior values of shape ``(n_particles,)``.
+        """
+        theta = np.atleast_2d(theta)
+        mu = theta[:, 0]
+        sigma = theta[:, 1]
+        in_bounds = (mu_min <= mu) & (mu <= mu_max) & (sigma_min <= sigma) & (sigma <= sigma_max)
+        lp = np.full(theta.shape[0], -np.inf)
+        lp[in_bounds] = -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
+        return lp
 
 
 # %%
@@ -223,36 +241,59 @@ prior = Prior()
 
 # %%
 # -------------------------
-# Summary statistics (empirical mu, median and sigma)
+# Batch simulator + summary statistics (empirical mean, std, median)
 # -------------------------
-def sum_stats(data):
-    stat1 = np.mean(data)
-    stat2 = np.std(data, ddof=0)
-    stat3 = np.median(data)
-    return np.array([stat1, stat2, stat3], dtype=float)
+# NOTE: Simulator and summary statistics functions fill in-place arrays
+# y: observed/simulated data — shape (n_batch_particles, n_samples)
+# theta: model parameters — shape (n_batch_particles, 2)
+# ss_out: summary statistics output array — shape (n_batch_particles, 3)
+
+
+def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
+    """Batch simulator.
+
+    theta (n_batch_particles, 2), y (n_batch_particles, n_samples).
+    Fills y in-place.
+    """
+    mu = theta[:, 0:1]  # (n_batch_particles, 1)
+    sigma = theta[:, 1:2]  # (n_batch_particles, 1)
+    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape)
+
+
+def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
+    """Batch stats.
+
+    y (n_batch_particles, n_samples), ss_out (n_batch_particles, 3).
+    Fills ss_out in-place.
+    """
+    ss_out[:, 0] = np.mean(y, axis=1)
+    ss_out[:, 1] = np.std(y, axis=1, ddof=0)
+    ss_out[:, 2] = np.median(y, axis=1)
 
 
 # %%
-ss_obs = sum_stats(y_obs)
+# n_stats
+n_stats = 3  # manually set
+
+# compute summary statistics (ss_obs) for the observed data (y_obs)
+ss_obs = np.empty((1, n_stats), dtype=np.float64)
+stats_fn(y_obs.reshape(1, -1), ss_obs)
+ss_obs = ss_obs.ravel()
 print("Observed summary statistics:", ss_obs)
-n_stats = ss_obs.size
 print("Number of summary statistics:", n_stats)
 
 
 # %%
 # -------------------------
-# Model + distance
+# build allocation-free f_dist(theta, out=None)
 # -------------------------
-def model(theta):
-    mu, sigma = theta
-    y = np.random.normal(mu, sigma, size=num_samples)
-    return sum_stats(y)
-
-
-def f_dist(theta):
-    ss = model(theta)
-    rho = np.abs(ss - ss_obs)  # Euclidean in 1D == abs
-    return rho
+f_dist = make_f_dist(
+    n_samples=n_samples,
+    ss_obs=ss_obs,
+    simulator=simulator,
+    stats_fn=stats_fn,
+    seed=123,
+)
 
 
 # %%
@@ -271,6 +312,9 @@ v = 1.0
 # -------------------------
 # Run: Differential Evolution, Single Epsilon
 # -------------------------
+rng_alg = np.random.default_rng(18)
+rng_prop = np.random.default_rng(22)
+
 config_dif = SABCConfig(
     f_dist=f_dist,
     prior=prior,
@@ -278,7 +322,8 @@ config_dif = SABCConfig(
     v=v,
     show_checkpoint=200,
     algorithm="single_eps",
-    proposal=DifferentialEvolution(n_para=2),
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    rng=rng_alg,
 )
 
 out_dif = sabc(config_dif, n_simulation=n_simulation)
@@ -287,11 +332,11 @@ out_dif = sabc(config_dif, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_2 = update_population(out_dif, config_dif, n_simulation=n_simulation)
+out_dif_2 = update_population(out_dif, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_dif = np.column_stack(out_dif_2.population)
+# Population (n_para × n_particles via transpose)
+pop_dif = out_dif_2.population.T
 
 # Epsilon history
 eps_dif = np.column_stack(out_dif_2.state.epsilon_history)
@@ -475,6 +520,9 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_3stats.pkl")
 # -------------------------
 # Run: Differential Evolution, Multi Epsilon
 # -------------------------
+rng_alg = np.random.default_rng(18)
+rng_prop = np.random.default_rng(22)
+
 config_dif_mult = SABCConfig(
     f_dist=f_dist,
     prior=prior,
@@ -482,7 +530,8 @@ config_dif_mult = SABCConfig(
     v=v,
     show_checkpoint=200,
     algorithm="multi_eps",
-    proposal=DifferentialEvolution(n_para=2),
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    rng=rng_alg,
 )
 
 out_dif_mult = sabc(config_dif_mult, n_simulation=n_simulation)
@@ -491,11 +540,11 @@ out_dif_mult = sabc(config_dif_mult, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_mult_2 = update_population(out_dif_mult, config_dif_mult, n_simulation=n_simulation)
+out_dif_mult_2 = update_population(out_dif_mult, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_dif_mult = np.column_stack(out_dif_mult_2.population)
+# Population (n_para × n_particles via transpose)
+pop_dif_mult = out_dif_mult_2.population.T
 
 # Epsilon history
 eps_dif_mult = np.column_stack(out_dif_mult_2.state.epsilon_history)

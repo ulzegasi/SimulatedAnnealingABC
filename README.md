@@ -13,24 +13,28 @@ and requires (user-defined):
 - a metric (distance),
 - and a stochastic simulator.
 
+All user-facing functions (simulator, summary statistics, prior, distance) use a **batch API** operating on 2-D arrays, enabling vectorized NumPy computation across entire particle populations.
+
 The SABC algorithm supports both **single-ε** and **multi-ε** annealing schemes and is suitable for computationally expensive stochastic models.
 
 ---
 
 ## Features
 
-- **Fast inner loop**
-  - Allocation-free distance evaluation
-  - In-place updates
-  - Precomputed buffers and cached quantities
+- **Batch-vectorized inner loop**
+  - All particle updates are processed in batch via NumPy (no Python per-particle loop)
+  - Allocation-free distance evaluation with lazy 2-D buffers
+  - In-place array operations throughout
+- **Optional Numba acceleration**
+  - User-supplied single-particle `@njit` functions are automatically wrapped in a `prange` batch kernel
 - **Reproducibility by design**
   - Independent RNG control for:
     - simulator / distance function
-    - SABC algorithm (accept–reject, resampling)
+    - SABC algorithm (accept-reject, resampling)
     - proposal mechanisms
 - **Modular architecture**
   - Plug in any simulator and summary statistics
-  - Custom distance metrics (absolute, squared, weighted, …)
+  - Custom distance metrics (absolute, squared, weighted, ...)
 - **Multiple proposal mechanisms**
   - Differential Evolution
   - Random Walk
@@ -94,61 +98,74 @@ y_obs = np.random.normal(true_mu, true_sigma, size=1000)
 
 ### 1. Define a prior
 
-The prior must provide:
+The prior must provide **batch** methods:
 
-- `rvs(rng)` — draw a sample using a NumPy `Generator`
-- `logpdf(theta)` — compute the log-density
+- `rvs(rng, size=n_particles)` — draw `n_particles` samples, returning shape `(n_particles, n_para)`
+- `logpdf(theta_batch)` — evaluate the log-density for a `(n_particles, n_para)` batch, returning `(n_particles,)`
 
 ```python
-mu_min, mu_max = -10.0, 20.0
-sigma_min, sigma_max = 0.0, 25.0
-
 class Prior:
-    def rvs(self, rng: np.random.Generator | None = None):
-        if rng is None:
-            rng = np.random.default_rng()
-        mu = rng.uniform(mu_min, mu_max)
-        sigma = rng.uniform(sigma_min, sigma_max)
-        return np.array([mu, sigma])
+    def __init__(self, mu_min, mu_max, sigma_min, sigma_max):
+        self.mu_min = mu_min
+        self.mu_max = mu_max
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
 
-    def logpdf(self, theta):
-        mu, sigma = theta
-        if mu_min <= mu <= mu_max and sigma_min <= sigma <= sigma_max:
-            return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
-        return -np.inf
+    def rvs(self, rng: np.random.Generator, size: int = 1) -> np.ndarray:
+        mu = rng.uniform(self.mu_min, self.mu_max, size=size)
+        sigma = rng.uniform(self.sigma_min, self.sigma_max, size=size)
+        return np.column_stack([mu, sigma])            # (size, 2)
 
-prior = Prior()
+    def logpdf(self, theta: np.ndarray) -> np.ndarray:
+        theta = np.atleast_2d(theta)                   # ensure (n_particles, 2)
+        mu = theta[:, 0]
+        sigma = theta[:, 1]
+        in_bounds = (
+            (self.mu_min <= mu) & (mu <= self.mu_max)
+            & (self.sigma_min <= sigma) & (sigma <= self.sigma_max)
+        )
+        lp = np.full(theta.shape[0], -np.inf)
+        lp[in_bounds] = (
+            -np.log(self.mu_max - self.mu_min) - np.log(self.sigma_max - self.sigma_min)
+        )
+        return lp                                       # (n_particles,)
+
+prior = Prior(mu_min=-10.0, mu_max=20.0, sigma_min=0.0, sigma_max=25.0)
 ```
 
 ### 2. Define simulator and summary statistics
 
+Both functions operate on **2-D batches** and fill output arrays **in-place**:
+
+- `simulator(theta, y, rng)` — `theta` is `(n_batch_particles, n_para)`, `y` is `(n_batch_particles, n_samples)`
+- `stats_fn(y, ss_out)` — `y` is `(n_batch_particles, n_samples)`, `ss_out` is `(n_batch_particles, n_stats)`
+
 ```python
 def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
-    mu = float(theta[0])
-    sigma = float(theta[1])
-    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape[0])  # <- in-place
+    mu = theta[:, 0:1]      # (n_batch_particles, 1)
+    sigma = theta[:, 1:2]   # (n_batch_particles, 1)
+    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape)  # in-place
 
 def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
-    ss_out[0] = np.mean(y)
-    ss_out[1] = np.std(y, ddof=0)
-
-# function metadata:
-stats_fn.n_stats = 2
+    ss_out[:, 0] = np.mean(y, axis=1)
+    ss_out[:, 1] = np.std(y, axis=1, ddof=0)
 ```
 
-Compute summary statistics (ss_obs) for given observed data (y_obs)
+Compute observed summary statistics (`ss_obs`). Since `stats_fn` expects a
+2-D batch, reshape the 1-D observed data to `(1, n_samples)`:
 
 ```python
-n_stats = stats_fn.n_stats # infer n_stats from the function metadata
-ss_obs = np.empty(n_stats, dtype=np.float64)
-stats_fn(y_obs, ss_obs)
+n_stats = 2
+ss_obs = np.empty((1, n_stats), dtype=np.float64)
+stats_fn(y_obs.reshape(1, -1), ss_obs)
+ss_obs = ss_obs.ravel()  # -> (n_stats,)
 ```
 
 ### 3. Build the distance function
 
 ```python
 f_dist = make_f_dist(
-    num_samples=1000,
+    n_samples=1000,
     ss_obs=ss_obs,
     simulator=simulator,
     stats_fn=stats_fn,
@@ -188,7 +205,7 @@ result = sabc(config, n_simulation=1_000_000)
 | Field | Default | Description |
 |---|---|---|
 | `f_dist` | *(required)* | Distance function (from `make_f_dist` or hand-written) |
-| `prior` | *(required)* | Prior with `.rvs(rng)` and `.logpdf(theta)` |
+| `prior` | *(required)* | Prior with `.rvs(rng, size=n_particles)` -> `(n_particles, n_para)` and `.logpdf(batch)` -> `(n_particles,)` |
 | `n_particles` | 1000 | Population size |
 | `v` | 1.0 | Annealing speed |
 | `delta` | 0.1 | Resampling parameter |
@@ -204,7 +221,7 @@ result = sabc(config, n_simulation=1_000_000)
 ### 5. Use update_population to continue from previous result
 
 ```python
-result_2 = update_population(result, config, n_simulation=1_000_000)
+result_2 = update_population(result, n_simulation=1_000_000)
 ```
 
 ### 6. Get/Plot results
@@ -212,8 +229,8 @@ result_2 = update_population(result, config, n_simulation=1_000_000)
 Extract posterior sample (population) and trajectories for temperature (epsilon), distances (rho) and modified distances (u).
 
 ```python
-# Population (n_particles × n_params)
-pop = np.column_stack(result_2.population)
+# Population — stored as (n_particles, n_para); transpose for per-parameter slicing
+pop = result_2.population.T     # (n_para, n_particles)
 mu_post = pop[0, :]
 sigma_post = pop[1, :]
 # Epsilon trajectory
@@ -313,11 +330,11 @@ For **fully reproducible runs**, all three sources must be fixed explicitly.
 
 The dominant cost in SABC is typically the **simulator + summary statistics**.
 
-If these components can be expressed in a Numba-compatible form (no Python objects, no dynamic allocations), they can be compiled with `numba.njit` and executed inside a tight loop.
+If these components can be expressed in a Numba-compatible form (no Python objects, no dynamic allocations), they can be compiled with `numba.njit` and executed inside a parallel `prange` loop over particles.
 
-The standard NumPy implementation remains the **default** and is often already very efficient.
+The standard NumPy batch implementation remains the **default** and is often already very efficient.
 
-Numba acceleration is therefore **optional** and intended for advanced use cases.
+Numba acceleration is therefore **optional** and intended for advanced use cases where the per-particle simulator is expensive or difficult to vectorize with NumPy.
 
 ---
 
@@ -325,38 +342,64 @@ Numba acceleration is therefore **optional** and intended for advanced use cases
 
 ```python
 f_dist = make_f_dist(
-    num_samples=num_samples,
+    n_samples=n_samples,
     ss_obs=ss_obs,
-    simulator=simulator,      # Python / NumPy
-    stats_fn=stats_fn,        # Python / NumPy
+    simulator=simulator,      # batch Python / NumPy: (n_batch_particles, n_para), (n_batch_particles, n_samples)
+    stats_fn=stats_fn,        # batch Python / NumPy: (n_batch_particles, n_samples), (n_batch_particles, n_stats)
 )
 ```
 
 This version:
 
-- Uses NumPy throughout
+- Uses vectorized NumPy throughout
 - Is fully reproducible
 - Requires no optional dependencies
 
 ### Numba-accelerated mode (advanced)
 
-To enable the fast path, provide Numba-compiled versions of the simulator and summary-statistics functions and set `fast=True`. The standard `simulator` and `stats_fn` arguments can be omitted in this case:
+To enable the fast path, provide **single-particle** Numba-compiled versions of the simulator and summary-statistics functions and set `fast=True`. The library automatically wraps them in a `numba.prange` batch kernel, so they are executed in parallel across particles:
 
 ```python
+@nb.njit(cache=True)
+def simulator_nb(theta, y):
+    """Single-particle: theta is 1-D (n_para,), y is 1-D (n_samples,). Fills y in-place."""
+    mu = theta[0]
+    sigma = theta[1]
+    tmp = np.random.normal(0.0, 1.0, y.size)
+    for i in range(y.size):
+        y[i] = mu + sigma * tmp[i]
+
+@nb.njit(cache=True)
+def stats_fn_nb(y, ss):
+    """Single-particle: y is 1-D (n_samples,), ss is 1-D (n_stats,). Fills ss in-place."""
+    s = 0.0
+    for i in range(y.size):
+        s += y[i]
+    m = s / y.size
+    v = 0.0
+    for i in range(y.size):
+        d = y[i] - m
+        v += d * d
+    ss[0] = m
+    ss[1] = np.sqrt(v / y.size)
+
 f_dist_fast = make_f_dist(
-    num_samples=num_samples,
+    n_samples=n_samples,
     ss_obs=ss_obs,
     fast=True,
-    simulator_nb=simulator_nb,   # @numba.njit
-    stats_fn_nb=stats_fn_nb,     # @numba.njit
+    simulator_nb=simulator_nb,   # @numba.njit, single-particle
+    stats_fn_nb=stats_fn_nb,     # @numba.njit, single-particle
 )
 ```
 
+The standard `simulator` and `stats_fn` arguments can be omitted when using `fast=True`.
+
 **Requirements for Numba mode:**
 
-- `simulator_nb(theta, y)` fills `y` in-place
-- `stats_fn_nb(y, ss)` fills `ss` in-place
+- `simulator_nb(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.
+- `stats_fn_nb(y, ss)` — single-particle: `y` is 1-D `(n_samples,)`, `ss` is 1-D `(n_stats,)`. Fills `ss` in-place.
 - Both functions must be compiled with `@numba.njit`
+- The library internally wraps them in a `numba.prange` loop, so the user writes only the per-particle logic
 - Avoid per-call allocations inside the Numba functions for best performance
 
 If Numba is not installed, attempting to use `fast=True` raises an informative error.

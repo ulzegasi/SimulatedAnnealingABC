@@ -1,4 +1,4 @@
-"""sabc.py — core Simulated Annealing ABC algorithm."""
+"""sabc.py — core Simulated Annealing ABC algorithm (vectorised batch mode)."""
 
 import logging
 import math
@@ -29,9 +29,12 @@ class SABCConfig:
     """Full configuration for an SABC run.
 
     Args:
-        f_dist: Distance function. Either from ``make_f_dist()`` or hand-written.
-            Signature: ``f_dist(theta) -> np.ndarray`` or ``f_dist(theta, out=buf) -> np.ndarray``.
-        prior: Prior distribution object with ``.rvs(rng)`` and ``.logpdf(theta)`` methods.
+        f_dist: Batch distance function.  Either from ``make_f_dist()`` or hand-written.
+            Signature: ``f_dist(theta_batch) -> np.ndarray`` with ``theta_batch`` of
+            shape ``(n_batch_particles, n_para)`` and return shape ``(n_batch_particles, n_stats)``.
+        prior: Prior distribution object.  Must implement:
+            - ``prior.rvs(rng, size=N)`` returning ``(N, n_para)`` parameter samples.
+            - ``prior.logpdf(theta_batch)`` accepting ``(N, n_para)`` and returning ``(N,)``.
         n_particles: Number of particles in the population.
         v: Annealing speed parameter (must be positive).
         delta: Resampling parameter (must be positive).
@@ -223,7 +226,7 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
                 f"u_bar_i={u_bar_i:.6g}, g(a)={fa:.6g}, g(b)={fb:.6g}"
             )
 
-        sol = root_scalar(g, bracket=(a, b), method="brentq")
+        sol = root_scalar(g, args=(u_bar_i,), bracket=(a, b), method="brentq")
         if not sol.converged:
             raise RuntimeError(f"Failed to find root for beta (stat {i}).")
 
@@ -279,25 +282,54 @@ def resample_population(
 
 
 # -------------------------------------------
-# Check if prior is valid
+# Check if prior is valid (batch interface)
 # -------------------------------------------
 def _check_prior(prior):
-    """Validate that prior has .rvs(rng) and .logpdf(theta) methods."""
+    """Validate that prior implements the batch interface.
+
+    Required methods:
+    - ``prior.rvs(rng, size=N)`` → ``(N, n_para)``
+    - ``prior.logpdf(theta_batch)`` → ``(N,)`` where ``theta_batch`` is ``(N, n_para)``
+    """
     for name in ("rvs", "logpdf"):
         if not hasattr(prior, name):
-            raise TypeError("prior must provide methods .rvs() and .logpdf(theta). ")
-    # verify rvs accepts an rng argument
+            raise TypeError(
+                "prior must provide methods .rvs(rng, size=N) and .logpdf(theta_batch)."
+            )
+
+    rng = np.random.default_rng(0)
+
+    # Check rvs(rng, size=N)
     try:
-        _ = prior.rvs(np.random.default_rng(0))
+        samples = prior.rvs(rng, size=2)
     except TypeError as e:
         raise TypeError(
-            "prior.rvs must accept a NumPy Generator: rvs(self, rng). "
-            "Example: theta = prior.rvs(rng)"
+            "prior.rvs must accept (rng, size=N). Example: theta_batch = prior.rvs(rng, size=100)"
         ) from e
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim != 2 or samples.shape[0] != 2:
+        raise TypeError(
+            f"prior.rvs(rng, size=2) must return shape (2, n_para), got {samples.shape}"
+        )
+
+    # Check logpdf(theta_batch)
+    try:
+        lp = prior.logpdf(samples)
+    except Exception as e:
+        raise TypeError(
+            "prior.logpdf must accept a 2-D array of shape (N, n_para). "
+            "Example: lp = prior.logpdf(theta_batch)"
+        ) from e
+    lp = np.asarray(lp, dtype=float)
+    if lp.shape != (2,):
+        raise TypeError(
+            f"prior.logpdf must return shape (N,), got {lp.shape} "
+            f"for input of shape {samples.shape}"
+        )
 
 
 # -------------------------------------------
-# Extracted helpers (independently callable for profiling)
+# Batch helpers
 # -------------------------------------------
 
 
@@ -307,118 +339,40 @@ def _draw_prior_samples(
     n_particles: int,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Draw ``n_particles`` from prior and evaluate f_dist for each.
+    """Draw ``n_particles`` from prior and evaluate f_dist in batch.
 
     Args:
-        f_dist: Distance function.
-        prior: Prior distribution with ``.rvs(rng)`` and ``.logpdf(theta)``.
+        f_dist: Batch distance function.
+        prior: Prior distribution with batch ``.rvs(rng, size=N)`` and ``.logpdf(theta_batch)``.
         n_particles: Number of particles to draw.
         rng: Random number generator.
 
     Returns:
         Tuple of (population, rho, logprior) arrays.
     """
-    # Draw one sample to determine dimensions
-    theta0 = np.asarray(prior.rvs(rng), dtype=float)
-    rho0 = f_dist(theta0)
-    rho0 = np.asarray(rho0, dtype=np.float64).reshape(-1)
-    if rho0.ndim != 1:
-        raise ValueError("f_dist must return a 1D array of distances.")
-    n_para = theta0.size
-    n_stats = rho0.size
+    population = np.asarray(prior.rvs(rng, size=n_particles), dtype=float)
+    if population.ndim != 2 or population.shape[0] != n_particles:
+        raise ValueError(
+            f"prior.rvs(rng, size={n_particles}) must return shape "
+            f"({n_particles}, n_para), got {population.shape}"
+        )
 
-    # Allocate containers
-    population = np.empty((n_particles, n_para), dtype=float)
-    rho = np.empty((n_particles, n_stats), dtype=float)
-
-    # Store first sample (already computed)
-    population[0, :] = theta0
-    rho[0, :] = rho0
-
-    # Fill the rest ----> CAN BE PARALLELIZED <----
-    for i in range(1, n_particles):
-        theta = np.asarray(prior.rvs(rng), dtype=float)
-        rho_i = f_dist(theta)
-        population[i, :] = theta
-        rho[i, :] = np.asarray(rho_i, dtype=np.float64).reshape(-1)
+    rho = f_dist(population)
+    rho = np.asarray(rho, dtype=np.float64)
+    if rho.ndim != 2 or rho.shape[0] != n_particles:
+        raise ValueError(f"f_dist must return shape (n_batch_particles, n_stats), got {rho.shape}")
 
     if np.any(rho < 0):
         raise ValueError("Negative distances are not allowed!")
 
-    # Precompute log prior for current population
-    logprior = np.array(
-        [float(prior.logpdf(population[i, :])) for i in range(n_particles)], dtype=float
-    )
+    logprior = np.asarray(prior.logpdf(population), dtype=float)
+    if logprior.shape != (n_particles,):
+        raise ValueError(f"prior.logpdf must return shape ({n_particles},), got {logprior.shape}")
 
     return population, rho, logprior
 
 
-def _propose_and_accept(
-    i: int,
-    population: np.ndarray,
-    u: np.ndarray,
-    rho: np.ndarray,
-    logprior: np.ndarray,
-    pop_inactive: np.ndarray,
-    proposal: Proposal,
-    prior,
-    f_dist: Callable,
-    cdfs_dist_prior: Callable,
-    inv_epsilon: np.ndarray,
-    rho_buf: np.ndarray,
-    u_buf: np.ndarray,
-    rng: np.random.Generator,
-) -> bool:
-    """Propose a new particle and accept/reject (Metropolis-Hastings step).
-
-    Modifies ``population``, ``u``, ``rho``, ``logprior`` in-place if accepted.
-
-    Args:
-        i: Index of the particle to update.
-        population: Current particle positions, shape ``(n_particles, n_para)``.
-        u: Transformed distances, shape ``(n_particles, n_stats)``.
-        rho: Raw distances, shape ``(n_particles, n_stats)``.
-        logprior: Log prior values, shape ``(n_particles,)``.
-        pop_inactive: Inactive half of the population (used by the proposal).
-        proposal: Proposal mechanism.
-        prior: Prior distribution.
-        f_dist: Distance function.
-        cdfs_dist_prior: CDF mapping function.
-        inv_epsilon: Inverse of current epsilon, shape ``(n_stats,)`` or ``(1,)``.
-        rho_buf: Pre-allocated buffer for proposed distances.
-        u_buf: Pre-allocated buffer for proposed transformed distances.
-        rng: Random number generator.
-
-    Returns:
-        True if the proposal was accepted.
-    """
-    theta_cur = population[i, :]
-    theta_prop, log_factor = proposal(theta_cur, pop_inactive)
-
-    lprior_prop = float(prior.logpdf(theta_prop))
-
-    if not np.isfinite(lprior_prop):
-        log_accept_prob = -np.inf
-    else:
-        lprior_cur = logprior[i]
-
-        f_dist(theta_prop, out=rho_buf)
-        cdfs_dist_prior(rho_buf, out=u_buf)
-        log_accept_prob = (
-            lprior_prop - lprior_cur + np.sum((u[i, :] - u_buf) * inv_epsilon) + log_factor
-        )
-
-    u01 = rng.random()
-    if (log_accept_prob >= 0.0) or (math.log(u01) < log_accept_prob):
-        population[i, :] = theta_prop
-        u[i, :] = u_buf
-        rho[i, :] = rho_buf
-        logprior[i] = lprior_prop
-        return True
-    return False
-
-
-def _update_single_batch(
+def _update_batch(
     active: slice,
     population: np.ndarray,
     u: np.ndarray,
@@ -434,49 +388,89 @@ def _update_single_batch(
     u_buf: np.ndarray,
     rng: np.random.Generator,
 ) -> int:
-    """Update all particles in one active half-batch.
-
-    This is the natural parallelization boundary.
+    """Update all particles in ``active`` slice in one vectorised pass.
 
     Args:
-        active: Slice of particle indices to update.
-        population: Current particle positions (mutated in-place).
-        u: Transformed distances (mutated in-place).
-        rho: Raw distances (mutated in-place).
-        logprior: Log prior values (mutated in-place).
-        pop_inactive: Inactive half of the population.
-        proposal: Proposal mechanism.
-        prior: Prior distribution.
-        f_dist: Distance function.
-        cdfs_dist_prior: CDF mapping function.
-        inv_epsilon: Inverse of current epsilon.
-        rho_buf: Pre-allocated buffer for proposed distances.
-        u_buf: Pre-allocated buffer for proposed transformed distances.
-        rng: Random number generator.
+        active: Slice identifying the particles to update.
+        population: Full population array, shape ``(n_particles, n_para)``.  Mutated in-place.
+        u: Transformed distances, shape ``(n_particles, n_stats)``.  Mutated in-place.
+        rho: Raw distances, shape ``(n_particles, n_stats)``.  Mutated in-place.
+        logprior: Log prior values, shape ``(n_particles,)``.  Mutated in-place.
+        pop_inactive: Frozen snapshot of the inactive half, shape ``(n_inactive, n_para)``.
+        proposal: Batch proposal mechanism.
+        prior: Prior distribution (batch interface).
+        f_dist: Batch distance function.
+        cdfs_dist_prior: Batch CDF mapping function.
+        inv_epsilon: Inverse of current epsilon, shape ``(n_stats,)``.
+        rho_buf: Pre-allocated scratch buffer, shape ``(>=n_batch_particles, n_stats)``.
+        u_buf: Pre-allocated scratch buffer, shape ``(>=n_batch_particles, n_stats)``.
+        rng: Random number generator (for accept/reject coin flips).
 
     Returns:
         Number of accepted proposals.
     """
-    n_accept = 0
-    for i in range(active.start, active.stop):
-        if _propose_and_accept(
-            i,
-            population,
-            u,
-            rho,
-            logprior,
-            pop_inactive,
-            proposal,
-            prior,
-            f_dist,
-            cdfs_dist_prior,
-            inv_epsilon,
-            rho_buf,
-            u_buf,
-            rng,
-        ):
-            n_accept += 1
-    return n_accept
+    n_batch_particles = active.stop - active.start
+    theta_cur = population[active]  # (n_batch_particles, n_para)
+
+    # 1. Batch propose
+    theta_prop, log_factors = proposal(
+        theta_cur, pop_inactive
+    )  # (n_batch_particles, n_para), (n_batch_particles,)
+
+    # 2. Batch logprior
+    lprior_prop = np.asarray(prior.logpdf(theta_prop), dtype=float)  # (n_batch_particles,)
+    valid = np.isfinite(lprior_prop)
+    n_valid = int(valid.sum())
+
+    if n_valid == 0:
+        return 0
+
+    # 3. Batch simulate + distance (only valid particles)
+    rho_valid = rho_buf[:n_valid]  # (n_valid, n_stats) — scratch view
+    f_dist(theta_prop[valid], out=rho_valid)
+
+    u_valid = u_buf[:n_valid]  # (n_valid, n_stats) — scratch view
+    cdfs_dist_prior(rho_valid, out=u_valid)
+
+    # 4. Batch acceptance probability
+    lprior_cur = logprior[active]  # (n_batch_particles,)
+    u_cur = u[active]  # (n_batch_particles, n_stats)
+
+    log_accept = np.full(n_batch_particles, -np.inf)
+
+    # Map valid positions into the dense rho_valid / u_valid arrays
+    u_cur_valid = u_cur[valid]  # (n_valid, n_stats)
+    log_accept[valid] = (
+        lprior_prop[valid]
+        - lprior_cur[valid]
+        + np.sum((u_cur_valid - u_valid) * inv_epsilon, axis=1)
+        + log_factors[valid]
+    )
+
+    # 5. Draw uniform and compare
+    u01 = rng.random(n_batch_particles)
+    accepted = (log_accept >= 0.0) | (np.log(u01) < log_accept)
+
+    # 6. Scatter accepted particles back into population arrays
+    n_accepted = int(accepted.sum())
+    if n_accepted == 0:
+        return 0
+
+    # Global indices of accepted particles
+    active_indices = np.arange(active.start, active.stop)
+    acc_idx = active_indices[accepted]
+
+    # Map accepted → valid → dense-index in rho_valid / u_valid
+    # Every accepted particle is necessarily valid (invalid ⇒ log_accept = -inf ⇒ never accepted)
+    valid_cumsum = np.cumsum(valid) - 1  # (B,) — maps batch position → index in rho_valid
+    acc_valid_idx = valid_cumsum[accepted]
+
+    population[acc_idx] = theta_prop[accepted]
+    logprior[acc_idx] = lprior_prop[accepted]
+    rho[acc_idx] = rho_valid[acc_valid_idx]
+    u[acc_idx] = u_valid[acc_valid_idx]
+
+    return n_accepted
 
 
 def _record_checkpoint(
@@ -489,14 +483,14 @@ def _record_checkpoint(
     checkpoint_history: int,
     show_checkpoint: float | int | None,
 ) -> None:
-    """Record histories and log progress at checkpoint intervals.
+    """Record histories and optionally log progress.
 
     Args:
         state: Algorithm state to update.
-        u: Current transformed distances.
-        rho: Current raw distances.
-        ix: Current iteration index (1-based).
-        n_population_updates: Total iterations.
+        u: Transformed distances, shape ``(n_particles, n_stats)``.
+        rho: Raw distances, shape ``(n_particles, n_stats)``.
+        ix: Current iteration index.
+        n_population_updates: Total number of iterations.
         t_start: Start time from ``time.perf_counter_ns()``.
         checkpoint_history: Record history every N iterations.
         show_checkpoint: Log progress every N iterations (or None to skip).
@@ -524,7 +518,7 @@ def _record_checkpoint(
 def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
     """Initialize population from the prior.
 
-    Draws ``n_particles`` samples from the prior, evaluates distances,
+    Draws ``n_particles`` samples from the prior, evaluates distances in batch,
     builds CDF mapping, performs initial resampling, and computes initial epsilon.
 
     Args:
@@ -551,21 +545,23 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
     )
 
     # ---------------------
-    # Draw prior samples and evaluate distances
+    # Draw prior samples and evaluate distances (batch)
     population, rho, logprior = _draw_prior_samples(f_dist, prior, n_particles, rng)
 
     # ------------------
     # Estimate the cdf of ρ given the prior
     rho_prior = rho.copy()
     cdfs_dist_prior = build_cdf(rho_prior)
-    # Transformed distances
-    u = np.empty_like(rho_prior)
-    for i in range(n_particles):
-        u[i, :] = cdfs_dist_prior(rho_prior[i, :])
+
+    # Transformed distances (batch CDF call)
+    u = cdfs_dist_prior(rho_prior)
+    u = np.asarray(u, dtype=float)
+    if u.ndim == 1:
+        u = u.reshape(-1, 1)
 
     # ------------------
     # Resampling before setting initial epsilon
-    population, u, rho_prior, logprior, ess = resample_population(
+    population, u, rho_prior, logprior, _ess = resample_population(
         population, u, rho_prior, logprior, delta, rng
     )
 
@@ -575,7 +571,7 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
     if algorithm == "multi_eps":
         epsilon = update_epsilon_multi_eps(u, v)
     elif algorithm == "single_eps":
-        epsilon = update_epsilon_single_eps(np.mean(u), v)
+        epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
     else:
         raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
 
@@ -611,7 +607,7 @@ def update_population(
     population_state: SABCResult,
     n_simulation: int,
 ) -> SABCResult:
-    """Update population using MCMC proposals, resampling, and annealing.
+    """Update population using batch MCMC proposals, resampling, and annealing.
 
     Args:
         population_state: Current SABC result (from ``initialization()`` or a previous run).
@@ -678,24 +674,25 @@ def update_population(
     # ---------------------
     t_start = time.perf_counter_ns()
 
-    # Buffers to avoid repeated allocations
-    rho_prop_buf = np.empty(n_stats, dtype=np.float64)
-    u_prop_buf = np.empty(n_stats, dtype=np.float64)
+    # Batch scratch buffers — sized for the larger half-batch
+    mid = n_particles // 2
+    batch_size = max(mid, n_particles - mid)
+    rho_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
+    u_prop_buf = np.empty((batch_size, n_stats), dtype=np.float64)
 
     # ---------------------
-    # Main loop: at each iteration all particles are updated
+    # Main loop: at each iteration all particles are updated (in two half-batches)
     for ix in track_progress(range(1, n_population_updates + 1), show_progressbar=show_progressbar):
         inv_epsilon = 1.0 / state.epsilon
 
         # Split population indices in two halves
-        mid = n_particles // 2
         batch_1 = slice(0, mid)
         batch_2 = slice(mid, n_particles)
 
         n_accept_tmp = 0
         for active, inactive in ((batch_1, batch_2), (batch_2, batch_1)):
             pop_inactive = population[inactive, :]
-            n_accept_tmp += _update_single_batch(
+            n_accept_tmp += _update_batch(
                 active,
                 population,
                 u,
@@ -717,7 +714,7 @@ def update_population(
         # ---------------------
         # Resample population if needed
         if state.n_accept >= (state.n_resampling + 1) * resample:
-            population, u, rho, logprior, ess = resample_population(
+            population, u, rho, logprior, _ess = resample_population(
                 population, u, rho, logprior, delta, rng
             )
             # Reattach new objects after resampling

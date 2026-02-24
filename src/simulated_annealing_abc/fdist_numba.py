@@ -1,4 +1,9 @@
-"""fdist_numba.py — Numba-accelerated picklable distance function."""
+"""fdist_numba.py — Numba-accelerated picklable distance function.
+
+Single-particle ``@njit`` user functions are wrapped in a ``prange`` batch
+kernel automatically, giving parallel execution over particles with no change
+to user code.
+"""
 
 from dataclasses import dataclass, field
 from typing import Callable
@@ -15,12 +20,15 @@ except ImportError:
     _has_numba = False
 
 
+# ======================================================================
+# Single-particle kernel (unchanged from original)
+# ======================================================================
 def _build_numba_kernel(
     simulator_nb,
     stats_fn_nb,
     distance: DistanceMode,
 ):
-    """Construct ``@njit`` core + transform functions.
+    """Construct ``@njit`` core + transform functions for one particle.
 
     Args:
         simulator_nb: Numba-jitted simulator.
@@ -68,6 +76,36 @@ def _build_numba_kernel(
     return _core
 
 
+# ======================================================================
+# Batch kernel — wraps single-particle _core in nb.prange
+# ======================================================================
+def _build_batch_kernel(core_fn):
+    """Wrap a single-particle ``_core`` in a ``prange`` batch loop.
+
+    The resulting function processes ``n_batch_particles`` particles in parallel, each using
+    its own row of the pre-allocated 2-D scratch buffers.
+
+    Args:
+        core_fn: The single-particle Numba kernel returned by
+            ``_build_numba_kernel``.
+
+    Returns:
+        A Numba-jitted ``_batch(theta_2d, y_2d, ss_2d, out_2d, ss_obs, w)``
+        function.
+    """
+
+    @nb.njit(parallel=True, cache=True)
+    def _batch(theta_2d, y_2d, ss_2d, out_2d, ss_obs, w_in):
+        n = theta_2d.shape[0]
+        for i in nb.prange(n):
+            core_fn(theta_2d[i], y_2d[i], ss_2d[i], out_2d[i], ss_obs, w_in)
+
+    return _batch
+
+
+# ======================================================================
+# FDistNumba — public dataclass
+# ======================================================================
 @dataclass
 class FDistNumba:
     """Picklable distance function — Numba-accelerated mode.
@@ -76,16 +114,22 @@ class FDistNumba:
     pickle.  Numba's on-disk cache (``cache=True``) ensures that subsequent
     rebuilds after deserialization are fast.
 
+    User-supplied ``simulator_nb`` and ``stats_fn_nb`` operate on **single
+    particles** (1-D arrays).  The library wraps them in a ``prange`` batch
+    kernel automatically.
+
     Args:
-        num_samples: Size of the simulated dataset per forward-model call.
+        n_samples: Size of the simulated dataset per forward-model call.
         ss_obs: Observed summary statistics (1-D).
-        simulator_nb: Numba-jitted simulator. Signature: ``simulator_nb(theta, y) -> None``.
-        stats_fn_nb: Numba-jitted stats function. Signature: ``stats_fn_nb(y, ss) -> None``.
+        simulator_nb: Numba-jitted simulator. Signature: ``simulator_nb(theta, y) -> None``
+            where ``theta`` is 1-D ``(n_para,)`` and ``y`` is 1-D ``(n_samples,)``.
+        stats_fn_nb: Numba-jitted stats function. Signature: ``stats_fn_nb(y, ss) -> None``
+            where ``y`` is 1-D ``(n_samples,)`` and ``ss`` is 1-D ``(n_stats,)``.
         distance: Distance mode (``"abs"``, ``"sq"``, or ``"weighted_sq"``).
         weights: Weights array for ``"weighted_sq"`` distance.
     """
 
-    num_samples: int
+    n_samples: int
     ss_obs: np.ndarray
     simulator_nb: Callable
     stats_fn_nb: Callable
@@ -94,6 +138,7 @@ class FDistNumba:
 
     # Transient state — excluded from pickle, rebuilt lazily
     _kernel: Callable | None = field(init=False, repr=False, compare=False, default=None)
+    _batch_kernel: Callable | None = field(init=False, repr=False, compare=False, default=None)
     _y: np.ndarray = field(init=False, repr=False, compare=False)
     _ss: np.ndarray = field(init=False, repr=False, compare=False)
     _w_core: np.ndarray = field(init=False, repr=False, compare=False)
@@ -121,24 +166,36 @@ class FDistNumba:
     # Transient state management
     # ------------------------------------------------------------------
     def _init_buffers(self):
-        """Create scratch buffers (not serialised)."""
-        self._y = np.empty(self.num_samples, dtype=np.float64)
-        self._ss = np.empty(self.ss_obs.size, dtype=np.float64)
+        """Create scratch buffers (not serialised).
+
+        Buffers start at batch size 1 and grow lazily on first real call.
+        """
+        self._y = np.empty((1, self.n_samples), dtype=np.float64)
+        self._ss = np.empty((1, self.ss_obs.size), dtype=np.float64)
         self._w_core = (
             self.weights
             if self.distance == "weighted_sq" and self.weights is not None
             else np.empty(1, dtype=np.float64)
         )
-        self._kernel = None  # rebuilt lazily on first call
+        self._kernel = None
+        self._batch_kernel = None
+
+    def _ensure_buffers(self, n_batch_particles: int) -> None:
+        """Grow scratch buffers if the current batch size exceeds capacity."""
+        if self._y.shape[0] < n_batch_particles:
+            self._y = np.empty((n_batch_particles, self.n_samples), dtype=np.float64)
+            self._ss = np.empty((n_batch_particles, self.ss_obs.size), dtype=np.float64)
 
     def _ensure_kernel(self):
-        """Build the Numba kernel on first call (lazy JIT)."""
+        """Build the Numba kernels on first call (lazy JIT)."""
         if self._kernel is None:
             self._kernel = _build_numba_kernel(
                 self.simulator_nb,
                 self.stats_fn_nb,
                 self.distance,
             )
+        if self._batch_kernel is None:
+            self._batch_kernel = _build_batch_kernel(self._kernel)
 
     # ------------------------------------------------------------------
     # Pickle protocol
@@ -146,7 +203,7 @@ class FDistNumba:
     def __getstate__(self):
         """Exclude transient buffers and kernel from pickle."""
         state = self.__dict__.copy()
-        for key in ("_kernel", "_y", "_ss", "_w_core"):
+        for key in ("_kernel", "_batch_kernel", "_y", "_ss", "_w_core"):
             state.pop(key, None)
         return state
 
@@ -166,26 +223,32 @@ class FDistNumba:
         """Evaluate distance between simulated and observed summary statistics.
 
         Args:
-            theta: Parameter vector (1-D).
-            out: Optional pre-allocated output buffer.
+            theta: Parameter batch, shape ``(n_batch_particles, n_para)``.
+            out: Optional pre-allocated output buffer, shape ``(n_batch_particles, n_stats)``.
 
         Returns:
-            Per-statistic distances.
+            Per-statistic distances, shape ``(n_batch_particles, n_stats)``.
         """
-        theta = np.asarray(theta, dtype=np.float64)
-        if theta.ndim != 1:
-            raise ValueError(f"theta must be 1D, got shape {theta.shape}")
-
+        theta = np.atleast_2d(np.asarray(theta, dtype=np.float64))
+        n_batch_particles = theta.shape[0]
         n_stats = self.ss_obs.size
+
+        self._ensure_buffers(n_batch_particles)
+        self._ensure_kernel()
+
+        y = self._y[:n_batch_particles]
+        ss = self._ss[:n_batch_particles]
+
         if out is None:
-            out = np.empty(n_stats, dtype=np.float64)
+            out = np.empty((n_batch_particles, n_stats), dtype=np.float64)
         else:
-            if out.shape != (n_stats,):
-                raise ValueError(f"out must have shape ({n_stats},), got {out.shape}.")
+            if out.shape != (n_batch_particles, n_stats):
+                raise ValueError(
+                    f"out must have shape ({n_batch_particles}, {n_stats}), got {out.shape}."
+                )
             if out.dtype != np.float64:
                 raise ValueError(f"out must have dtype float64, got {out.dtype}.")
 
-        self._ensure_kernel()
-        assert self._kernel is not None  # guaranteed by _ensure_kernel
-        self._kernel(theta, self._y, self._ss, out, self.ss_obs, self._w_core)
+        assert self._batch_kernel is not None  # guaranteed by _ensure_kernel
+        self._batch_kernel(theta, y, ss, out, self.ss_obs, self._w_core)
         return out

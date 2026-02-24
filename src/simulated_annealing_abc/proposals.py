@@ -1,4 +1,4 @@
-"""proposals.py."""
+"""proposals.py — batch proposal generators for SABC."""
 
 from dataclasses import dataclass
 
@@ -9,13 +9,24 @@ import numpy as np
 # Base proposal type
 # -------------------------------------------------------
 class Proposal:
-    """Base class for proposal generators."""
+    """Base class for proposal generators.
+
+    All proposals operate in batch mode:
+
+    ``proposal(theta_batch, pop_inactive) -> (theta_prop_batch, log_factors)``
+
+    where ``theta_batch`` has shape ``(n_batch_particles, n_para)`` and ``pop_inactive`` has
+    shape ``(n_inactive, n_para)``.  Returns ``(n_batch_particles, n_para)`` proposals and
+    ``(n_batch_particles,)`` log Metropolis-Hastings correction factors.
+    """
 
     def update(self, population: np.ndarray) -> None:
+        """Recompute internal state from the current population (optional)."""
         return
 
 
 def update_proposal(proposal: Proposal, population: np.ndarray) -> None:
+    """Update proposal distribution from the current population."""
     proposal.update(population)
 
 
@@ -24,7 +35,7 @@ def update_proposal(proposal: Proposal, population: np.ndarray) -> None:
 # -------------------------------------------------------
 @dataclass(init=False)
 class RandomWalk(Proposal):
-    """Gaussian random walk proposal.
+    """Gaussian random walk proposal (batch mode).
 
     Parameters
     ----------
@@ -38,7 +49,7 @@ class RandomWalk(Proposal):
     Sigma: float | np.ndarray  # scalar variance or covariance matrix
     rng: np.random.Generator
 
-    def __init__(self, *, beta=0.8, n_para=1, rng=None):
+    def __init__(self, *, beta: float = 0.8, n_para: int = 1, rng=None):
         if not (0.0 < beta <= 1.0):
             raise ValueError("Mixing parameter `beta` must be between 0 and 1.")
         self.beta = float(beta)
@@ -49,12 +60,23 @@ class RandomWalk(Proposal):
         else:
             self.Sigma = -np.ones((n_para, n_para), dtype=float)
 
-    def __call__(self, theta: np.ndarray, population: np.ndarray):
-        log_factor = 0.0
+    def __call__(
+        self,
+        theta: np.ndarray,
+        population: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Propose a batch of new particles via Gaussian random walk.
 
-        theta = np.asarray(theta, dtype=float)
-        if theta.ndim != 1:
-            raise ValueError("theta must be a 1D array.")
+        Args:
+            theta: Current particle positions, shape ``(n_batch_particles, n_para)``.
+            population: Inactive population (unused by RandomWalk, kept for interface).
+
+        Returns:
+            Tuple of proposed positions ``(n_batch_particles, n_para)`` and log factors
+            ``(n_batch_particles,)`` (always zero).
+        """
+        theta = np.atleast_2d(np.asarray(theta, dtype=float))
+        n_batch_particles, n_para = theta.shape
         rng = self.rng
 
         # 1D case: Sigma is a scalar variance
@@ -62,20 +84,20 @@ class RandomWalk(Proposal):
             var = float(self.Sigma)
             if var <= 0.0:
                 raise RuntimeError("RandomWalk Sigma not updated yet.")
-            step = rng.normal(loc=0.0, scale=np.sqrt(var))
-            return np.array([theta[0] + step], dtype=float), log_factor
+            steps = rng.normal(0.0, np.sqrt(var), size=n_batch_particles)
+            return theta + steps[:, np.newaxis], np.zeros(n_batch_particles)
 
         # nD case: Sigma is a covariance matrix
         cov = np.asarray(self.Sigma, dtype=float)
         if cov.ndim != 2:
             raise ValueError("RandomWalk Sigma must be a covariance matrix.")
-        d = cov.shape[0]
-        if theta.size != d:
+        if n_para != cov.shape[0]:
             raise ValueError("theta dimension does not match Sigma.")
-        step = rng.multivariate_normal(mean=np.zeros(d), cov=cov)
-        return theta + step, log_factor
+        steps = rng.multivariate_normal(np.zeros(n_para), cov, size=n_batch_particles)
+        return theta + steps, np.zeros(n_batch_particles)
 
     def update(self, population: np.ndarray) -> None:
+        """Recompute jump covariance from the current population."""
         pop = np.asarray(population, dtype=float)
         if pop.ndim != 2:
             raise ValueError("population must be a 2D array (n_particles, n_para).")
@@ -90,8 +112,8 @@ class RandomWalk(Proposal):
 
         # nD case
         cov = np.cov(pop, rowvar=False, bias=False)
-        d = cov.shape[0]
-        self.Sigma = self.beta * (cov + 1e-8 * np.eye(d))
+        n_para = cov.shape[0]
+        self.Sigma = self.beta * (cov + 1e-8 * np.eye(n_para))
 
 
 # -------------------------------------------------------
@@ -99,9 +121,9 @@ class RandomWalk(Proposal):
 # -------------------------------------------------------
 @dataclass(init=False)
 class DifferentialEvolution(Proposal):
-    """Differential Evolution proposal.
+    """Differential Evolution proposal (batch mode).
 
-    If `n_para` is given, uses gamma0 = 2.38 / sqrt(2*n_para),
+    If ``n_para`` is given, uses ``gamma0 = 2.38 / sqrt(2 * n_para)``,
     matching the typical DE scaling used in ensemble samplers.
     """
 
@@ -109,50 +131,59 @@ class DifferentialEvolution(Proposal):
     sigma_gamma: float
     rng: np.random.Generator
 
-    def __init__(self, *, gamma0=None, n_para=None, sigma_gamma=1e-5, rng=None):
-        if (gamma0 is None) == (n_para is None):  # Error if both are None or both are provided
+    def __init__(
+        self,
+        *,
+        gamma0: float | None = None,
+        n_para: int | None = None,
+        sigma_gamma: float = 1e-5,
+        rng=None,
+    ):
+        if (gamma0 is None) == (n_para is None):
             raise ValueError("Provide exactly one of `gamma0` or `n_para`.")
         if gamma0 is None:
-            gamma0 = 2.38 / np.sqrt(2.0 * float(n_para))
+            gamma0 = 2.38 / np.sqrt(2.0 * float(n_para))  # type: ignore[arg-type]
         self.gamma0 = float(gamma0)
         self.sigma_gamma = float(sigma_gamma)
         self.rng = np.random.default_rng() if rng is None else rng
 
-    def __call__(self, theta: np.ndarray, population: np.ndarray):
-        """.
+    def __call__(
+        self,
+        theta: np.ndarray,
+        population: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Propose a batch of new particles via Differential Evolution.
 
-        theta: (d,)
-        population: (m, d)  (this can be the inactive half view)
-        Returns: (proposal_theta (d,), log_factor (float))
+        Args:
+            theta: Current particle positions, shape ``(n_batch_particles, n_para)``.
+            population: Inactive half of the population, shape ``(n_inactive, n_para)``.
+
+        Returns:
+            Tuple of proposed positions ``(n_batch_particles, n_para)`` and log factors
+            ``(n_batch_particles,)`` (always zero).
         """
+        theta = np.atleast_2d(np.asarray(theta, dtype=float))
+        n_batch_particles = theta.shape[0]
         pop = population
         if pop.ndim != 2:
-            raise ValueError("population must be 2D (m, d).")
-        m, d = pop.shape
-        if m < 2:
+            raise ValueError("population must be 2D (n_inactive, n_para).")
+        n_inactive = pop.shape[0]
+        if n_inactive < 2:
             raise ValueError("Population must contain at least 2 particles.")
-        if theta.ndim != 1 or theta.size != d:
-            raise ValueError("theta must be a 1D array of length d.")
 
         rng = self.rng
 
-        # pick two distinct partners
-        # draw two distinct integers uniformly without replacement,
-        # but much faster than np.random.choice(..., replace=False).
-        i1 = rng.integers(m)
-        i2 = rng.integers(m - 1)
-        if i2 >= i1:
-            i2 += 1  # ensures i2 != i1
-        # i1, i2 = np.random.choice(m, size=2, replace=False)
-        theta1 = pop[i1]  # shape (d,)
-        theta2 = pop[i2]  # shape (d,)
+        # Pick two distinct partners for every particle in the batch
+        i1 = rng.integers(n_inactive, size=n_batch_particles)
+        i2 = rng.integers(n_inactive - 1, size=n_batch_particles)
+        i2[i2 >= i1] += 1
 
-        gamma = self.gamma0 * (1.0 + self.sigma_gamma * rng.standard_normal())
-        log_factor = 0.0
-        proposal = theta + gamma * (theta1 - theta2)
-        return proposal, log_factor
+        gamma = self.gamma0 * (1.0 + self.sigma_gamma * rng.standard_normal(n_batch_particles))
+        proposal = theta + gamma[:, np.newaxis] * (pop[i1] - pop[i2])
+        return proposal, np.zeros(n_batch_particles)
 
     def update(self, population: np.ndarray) -> None:
+        """No-op for Differential Evolution."""
         return
 
 
@@ -161,7 +192,7 @@ class DifferentialEvolution(Proposal):
 # -------------------------------------------------------
 @dataclass(init=False)
 class StretchMove(Proposal):
-    """Stretch move proposal (Goodman & Weare / emcee-style)."""
+    """Stretch move proposal (Goodman & Weare / emcee-style, batch mode)."""
 
     a: float
     rng: np.random.Generator
@@ -172,28 +203,41 @@ class StretchMove(Proposal):
         self.a = float(a)
         self.rng = np.random.default_rng() if rng is None else rng
 
-    def __call__(self, theta: np.ndarray, population: np.ndarray):
+    def __call__(
+        self,
+        theta: np.ndarray,
+        population: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Propose a batch of new particles via the stretch move.
+
+        Args:
+            theta: Current particle positions, shape ``(n_batch_particles, n_para)``.
+            population: Inactive half of the population, shape ``(n_inactive, n_para)``.
+
+        Returns:
+            Tuple of proposed positions ``(n_batch_particles, n_para)`` and log factors
+            ``(n_batch_particles,)``.
+        """
+        theta = np.atleast_2d(np.asarray(theta, dtype=float))
+        n_batch_particles, n_para = theta.shape
         pop = population
         if pop.ndim != 2:
-            raise ValueError("population must be 2D (m, d).")
-        m, d = pop.shape
-        if m < 1:
+            raise ValueError("population must be 2D (n_inactive, n_para).")
+        n_inactive = pop.shape[0]
+        if n_inactive < 1:
             raise ValueError("Population must not be empty.")
 
-        theta = np.asarray(theta, dtype=float)
-        if theta.ndim != 1 or theta.size != d:
-            raise ValueError("theta must be a 1D array of length d.")
-
         rng = self.rng
-        i = rng.integers(m)
-        partner = pop[i, :]
+        i = rng.integers(n_inactive, size=n_batch_particles)
+        partners = pop[i, :]
 
-        U = rng.random()
-        z = ((self.a - 1.0) * U + 1.0) ** 2 / self.a
+        u_rand = rng.random(n_batch_particles)
+        z = ((self.a - 1.0) * u_rand + 1.0) ** 2 / self.a
 
-        log_factor = np.log(z) * (d - 1)
-        proposal = partner + z * (theta - partner)
-        return proposal, log_factor
+        log_factors = np.log(z) * (n_para - 1)
+        proposal = partners + z[:, np.newaxis] * (theta - partners)
+        return proposal, log_factors
 
     def update(self, population: np.ndarray) -> None:
+        """No-op for StretchMove."""
         return

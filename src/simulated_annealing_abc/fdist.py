@@ -1,4 +1,4 @@
-"""fdist.py — picklable distance functions for SABC."""
+"""fdist.py — picklable batch distance functions for SABC."""
 
 from dataclasses import dataclass, field
 from typing import Callable, Literal
@@ -13,25 +13,32 @@ StatsFn = Callable[[np.ndarray, np.ndarray], None]
 
 @dataclass
 class FDist:
-    """Picklable distance function — pure NumPy mode.
+    """Picklable distance function — pure NumPy batch mode.
 
     Wraps a simulator and summary-statistics function into a single callable
-    ``f_dist(theta, out=None) -> np.ndarray`` that returns per-statistic distances.
+    ``f_dist(theta_batch, out=None) -> np.ndarray`` that returns per-statistic
+    distances for a batch of parameter vectors.
 
     Scratch buffers and the RNG are transient: excluded from pickle and
     recreated on deserialization so each worker process gets its own state.
 
     Args:
-        num_samples: Size of the simulated dataset per forward-model call.
+        n_samples: Size of the simulated dataset per forward-model call.
         ss_obs: Observed summary statistics (1-D).
-        simulator: Simulator function. Signature: ``simulator(theta, y, rng) -> None``.
-        stats_fn: Summary-statistics function. Signature: ``stats_fn(y, ss) -> None``.
+        simulator: Batch simulator function.
+            Signature: ``simulator(theta, y, rng) -> None``
+            where ``theta`` has shape ``(n_batch_particles, n_para)`` and ``y`` has shape
+            ``(n_batch_particles, n_samples)``.  Must fill ``y`` in-place.
+        stats_fn: Batch summary-statistics function.
+            Signature: ``stats_fn(y, ss) -> None``
+            where ``y`` has shape ``(n_batch_particles, n_samples)`` and ``ss`` has shape
+            ``(n_batch_particles, n_stats)``.  Must fill ``ss`` in-place.
         seed: RNG seed for the simulator.
         distance: Distance mode (``"abs"``, ``"sq"``, or ``"weighted_sq"``).
         weights: Weights array for ``"weighted_sq"`` distance.
     """
 
-    num_samples: int
+    n_samples: int
     ss_obs: np.ndarray
     simulator: SimulatorFn
     stats_fn: StatsFn
@@ -66,10 +73,19 @@ class FDist:
     # Transient state management
     # ------------------------------------------------------------------
     def _init_buffers(self):
-        """Create scratch buffers and RNG (not serialised)."""
+        """Create scratch buffers and RNG (not serialised).
+
+        Buffers start at batch size 1 and grow lazily on first real call.
+        """
         self._rng = np.random.default_rng(self.seed)
-        self._y = np.empty(self.num_samples, dtype=np.float64)
-        self._ss = np.empty(self.ss_obs.size, dtype=np.float64)
+        self._y = np.empty((1, self.n_samples), dtype=np.float64)
+        self._ss = np.empty((1, self.ss_obs.size), dtype=np.float64)
+
+    def _ensure_buffers(self, n_batch_particles: int) -> None:
+        """Grow scratch buffers if the current batch size exceeds capacity."""
+        if self._y.shape[0] < n_batch_particles:
+            self._y = np.empty((n_batch_particles, self.n_samples), dtype=np.float64)
+            self._ss = np.empty((n_batch_particles, self.ss_obs.size), dtype=np.float64)
 
     def _bind_transform(self):
         """Bind ``_transform`` to the correct method — once, not per call."""
@@ -107,29 +123,34 @@ class FDist:
         """Evaluate distance between simulated and observed summary statistics.
 
         Args:
-            theta: Parameter vector (1-D).
-            out: Optional pre-allocated output buffer.
+            theta: Parameter batch, shape ``(n_batch_particles, n_para)``.
+            out: Optional pre-allocated output buffer, shape ``(n_batch_particles, n_stats)``.
 
         Returns:
-            Per-statistic distances.
+            Per-statistic distances, shape ``(n_batch_particles, n_stats)``.
         """
-        theta = np.asarray(theta, dtype=np.float64)
-        if theta.ndim != 1:
-            raise ValueError(f"theta must be 1D, got shape {theta.shape}")
+        theta = np.atleast_2d(np.asarray(theta, dtype=np.float64))
+        n_batch_particles = theta.shape[0]
 
-        self.simulator(theta, self._y, self._rng)
-        self.stats_fn(self._y, self._ss)
+        self._ensure_buffers(n_batch_particles)
+        y = self._y[:n_batch_particles]
+        ss = self._ss[:n_batch_particles]
+
+        self.simulator(theta, y, self._rng)
+        self.stats_fn(y, ss)
 
         n_stats = self.ss_obs.size
         if out is None:
-            out = np.empty(n_stats, dtype=np.float64)
+            out = np.empty((n_batch_particles, n_stats), dtype=np.float64)
         else:
-            if out.shape != (n_stats,):
-                raise ValueError(f"out must have shape ({n_stats},), got {out.shape}.")
+            if out.shape != (n_batch_particles, n_stats):
+                raise ValueError(
+                    f"out must have shape ({n_batch_particles}, {n_stats}), got {out.shape}."
+                )
             if out.dtype != np.float64:
                 raise ValueError(f"out must have dtype float64, got {out.dtype}.")
 
-        np.subtract(self._ss, self.ss_obs, out=out)
+        np.subtract(ss, self.ss_obs, out=out)
         self._transform(out)
         return out
 
@@ -150,11 +171,11 @@ class FDist:
 
 
 # ======================================================================
-# Factory function (public API, backward-compatible)
+# Factory function (public API)
 # ======================================================================
 def make_f_dist(
     *,
-    num_samples: int,
+    n_samples: int,
     ss_obs: np.ndarray,
     simulator: SimulatorFn | None = None,
     stats_fn: StatsFn | None = None,
@@ -165,18 +186,39 @@ def make_f_dist(
     simulator_nb=None,
     stats_fn_nb=None,
 ):
-    """Build a picklable distance function ``f_dist(theta, out=None)``.
+    """Build a picklable distance function ``f_dist(theta_batch, out=None)``.
 
     Pure NumPy mode (default, ``fast=False``):
       - Requires ``simulator`` and ``stats_fn``.
-      - simulator(theta, y, rng) fills y in-place
-      - stats_fn(y, ss) fills ss in-place
-      - returns elementwise distances |ss - ss_obs| (or squared / weighted squared)
+      - ``simulator(theta, y, rng)`` fills ``y`` in-place.
+        ``theta`` has shape ``(n_batch_particles, n_para)``, ``y`` has shape
+        ``(n_batch_particles, n_samples)``.
+      - ``stats_fn(y, ss)`` fills ``ss`` in-place.
+        ``y`` has shape ``(n_batch_particles, n_samples)``, ``ss`` has shape
+        ``(n_batch_particles, n_stats)``.
+      - Returns elementwise distances ``|ss - ss_obs|`` (or squared / weighted squared).
 
     Optional Numba mode (``fast=True``):
       - Requires ``simulator_nb`` and ``stats_fn_nb`` (both njit-compiled).
+      - These operate on **single particles**: ``simulator_nb(theta, y)`` with
+        ``theta`` shape ``(n_para,)`` and ``y`` shape ``(n_samples,)``.
+      - The library wraps them in a parallel batch kernel automatically.
       - ``simulator`` and ``stats_fn`` are not needed and can be omitted.
-      - dispatches to ``FDistNumba`` from ``simulated_annealing_abc.fdist_numba``
+
+    Args:
+        n_samples: Size of the simulated dataset per forward-model call.
+        ss_obs: Observed summary statistics (1-D).
+        simulator: Batch simulator function (pure NumPy mode).
+        stats_fn: Batch summary-statistics function (pure NumPy mode).
+        seed: RNG seed for the simulator (pure NumPy mode only).
+        distance: Distance mode (``"abs"``, ``"sq"``, or ``"weighted_sq"``).
+        weights: Weights array for ``"weighted_sq"`` distance.
+        fast: If ``True``, use Numba-accelerated mode.
+        simulator_nb: Numba-jitted single-particle simulator (Numba mode).
+        stats_fn_nb: Numba-jitted single-particle stats function (Numba mode).
+
+    Returns:
+        A callable ``f_dist(theta_batch, out=None) -> np.ndarray``.
     """
     # ---- optional Numba fast path (kept separate to keep numba truly optional)
     if fast:
@@ -185,7 +227,7 @@ def make_f_dist(
         from .fdist_numba import FDistNumba  # local import: optional dependency
 
         return FDistNumba(
-            num_samples=num_samples,
+            n_samples=n_samples,
             ss_obs=np.asarray(ss_obs, dtype=np.float64).reshape(-1),
             simulator_nb=simulator_nb,
             stats_fn_nb=stats_fn_nb,
@@ -200,7 +242,7 @@ def make_f_dist(
         raise ValueError("stats_fn is required when fast=False (pure NumPy mode).")
 
     return FDist(
-        num_samples=num_samples,
+        n_samples=n_samples,
         ss_obs=ss_obs,
         simulator=simulator,
         stats_fn=stats_fn,

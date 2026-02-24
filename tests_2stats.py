@@ -68,9 +68,9 @@ np.random.seed(1822)
 # -------------------------
 true_mu = 10.0
 true_sigma = 15.0
-num_samples = 1000
+n_samples = 1000
 
-y_obs = np.random.normal(true_mu, true_sigma, size=num_samples)
+y_obs = np.random.normal(true_mu, true_sigma, size=n_samples)
 
 # %%
 # Plot the observed data and true distribution
@@ -207,26 +207,35 @@ plt.show()
 
 
 class Prior:
-    """Independent Uniform prior for (mu, sigma)."""
+    """Independent Uniform prior for (mu, sigma).
 
-    def rvs(self, rng: np.random.Generator | None = None):
-        """Draw a sample from the prior.
+    Batch API:
+      - ``rvs(rng, size=n_particles)`` -> ``(n_particles, 2)``
+      - ``logpdf(theta_batch)`` -> ``(n_particles,)``  where ``theta_batch`` is ``(n_particles, 2)``
+    """
 
-        If rng is provided, it is used for reproducibility.
-        Otherwise, falls back to NumPy's default RNG.
+    def rvs(self, rng: np.random.Generator, size: int = 1) -> np.ndarray:
+        """Draw ``size`` samples from the prior, returning shape ``(size, 2)``."""
+        mu = rng.uniform(mu_min, mu_max, size=size)
+        sigma = rng.uniform(sigma_min, sigma_max, size=size)
+        return np.column_stack([mu, sigma])
+
+    def logpdf(self, theta: np.ndarray) -> np.ndarray:
+        """Evaluate log-prior for a batch of parameters.
+
+        Args:
+            theta: Parameter array of shape ``(n_particles, 2)``.
+
+        Returns:
+            Log-prior values of shape ``(n_particles,)``.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
-        mu = rng.uniform(mu_min, mu_max)
-        sigma = rng.uniform(sigma_min, sigma_max)
-        return np.array([mu, sigma], dtype=float)
-
-    def logpdf(self, theta):
-        mu, sigma = theta
-        if (mu_min <= mu <= mu_max) and (sigma_min <= sigma <= sigma_max):
-            return -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
-        return -np.inf
+        theta = np.atleast_2d(theta)
+        mu = theta[:, 0]
+        sigma = theta[:, 1]
+        in_bounds = (mu_min <= mu) & (mu <= mu_max) & (sigma_min <= sigma) & (sigma <= sigma_max)
+        lp = np.full(theta.shape[0], -np.inf)
+        lp[in_bounds] = -np.log(mu_max - mu_min) - np.log(sigma_max - sigma_min)
+        return lp
 
 
 # %%
@@ -246,21 +255,24 @@ prior = Prior()
 
 
 def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
-    """Fill y in-place with N(mu, sigma).
-    theta: (2,) = [mu, sigma]
-    y: (num_samples,)
+    """Batch simulator.
+
+    theta (n_batch_particles, 2), y (n_batch_particles, n_samples).
+    Fills y in-place.
     """
-    mu = float(theta[0])
-    sigma = float(theta[1])
-    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape[0])  # <- in-place
+    mu = theta[:, 0:1]  # (n_batch_particles, 1)
+    sigma = theta[:, 1:2]  # (n_batch_particles, 1)
+    y[:] = rng.normal(loc=mu, scale=sigma, size=y.shape)
 
 
 def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
-    """Fill ss_out in-place with summary statistics.
-    ss_out: (2,) = [mean(y), std(y)]
+    """Batch stats.
+
+    y (n_batch_particles, n_samples), ss_out (n_batch_particles, 2).
+    Fills ss_out in-place.
     """
-    ss_out[0] = np.mean(y)
-    ss_out[1] = np.std(y, ddof=0)
+    ss_out[:, 0] = np.mean(y, axis=1)
+    ss_out[:, 1] = np.std(y, axis=1, ddof=0)
 
 
 # %%
@@ -298,8 +310,9 @@ def stats_fn_nb(y, ss):
 n_stats = 2  # manually set
 
 # compute summary statistics (ss_obs) for the observed data (y_obs)
-ss_obs = np.empty(n_stats, dtype=np.float64)
-stats_fn(y_obs, ss_obs)
+ss_obs = np.empty((1, n_stats), dtype=np.float64)
+stats_fn(y_obs.reshape(1, -1), ss_obs)
+ss_obs = ss_obs.ravel()
 print("Observed summary statistics:", ss_obs)
 
 # do the same using numba stats function
@@ -312,7 +325,7 @@ print("Observed summary statistics (numba):", ss_obs_nb)
 # build allocation-free f_dist(theta, out=None)
 # -------------------------
 f_dist = make_f_dist(
-    num_samples=num_samples,
+    n_samples=n_samples,
     ss_obs=ss_obs,
     simulator=simulator,
     stats_fn=stats_fn,
@@ -324,15 +337,15 @@ f_dist = make_f_dist(
 # Build fast f_dist (numba-based)
 # -------------------------
 f_dist_fast = make_f_dist(
-    num_samples=num_samples,
+    n_samples=n_samples,
     ss_obs=ss_obs,
     fast=True,
     simulator_nb=simulator_nb,
     stats_fn_nb=stats_fn_nb,
 )
 
-tmp = np.empty(2, dtype=np.float64)
-theta0 = prior.rvs(np.random.default_rng(0))  # any theta
+tmp = np.empty((1, 2), dtype=np.float64)
+theta0 = prior.rvs(np.random.default_rng(0))  # (1, 2) — any theta
 f_dist_fast(theta0, out=tmp)  # triggers compilation
 
 # %%
@@ -387,11 +400,11 @@ out_dif = sabc(config_dif, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_2 = update_population(out_dif, config_dif, n_simulation=n_simulation)
+out_dif_2 = update_population(out_dif, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_dif = np.column_stack(out_dif_2.population)
+# Population (n_particles × n_para)
+pop_dif = out_dif_2.population.T
 
 # Epsilon history
 eps_dif = np.column_stack(out_dif_2.state.epsilon_history)
@@ -592,11 +605,11 @@ out_dif_mult = sabc(config_dif_mult, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_dif_mult_2 = update_population(out_dif_mult, config_dif_mult, n_simulation=n_simulation)
+out_dif_mult_2 = update_population(out_dif_mult, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_dif_mult = np.column_stack(out_dif_mult_2.population)
+# Population (n_particles × n_para)
+pop_dif_mult = out_dif_mult_2.population.T
 
 # Epsilon history
 eps_dif_mult = np.column_stack(out_dif_mult_2.state.epsilon_history)
@@ -803,11 +816,11 @@ out_rw = sabc(config_rw, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_rw_2 = update_population(out_rw, config_rw, n_simulation=n_simulation)
+out_rw_2 = update_population(out_rw, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_rw = np.column_stack(out_rw_2.population)
+# Population (n_particles × n_para)
+pop_rw = out_rw_2.population.T
 
 # Epsilon history
 eps_rw = np.column_stack(out_rw_2.state.epsilon_history)
@@ -1006,11 +1019,11 @@ out_rw_mult = sabc(config_rw_mult, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_rw_mult_2 = update_population(out_rw_mult, config_rw_mult, n_simulation=n_simulation)
+out_rw_mult_2 = update_population(out_rw_mult, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_rw_mult = np.column_stack(out_rw_mult_2.population)
+# Population (n_particles × n_para)
+pop_rw_mult = out_rw_mult_2.population.T
 
 # Epsilon history
 eps_rw_mult = np.column_stack(out_rw_mult_2.state.epsilon_history)
@@ -1215,11 +1228,11 @@ out_sm = sabc(config_sm, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_sm_2 = update_population(out_sm, config_sm, n_simulation=n_simulation)
+out_sm_2 = update_population(out_sm, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_sm = np.column_stack(out_sm_2.population)
+# Population (n_particles × n_para)
+pop_sm = out_sm_2.population.T
 
 # Epsilon history
 eps_sm = np.column_stack(out_sm_2.state.epsilon_history)
@@ -1417,11 +1430,11 @@ out_sm_mult = sabc(config_sm_mult, n_simulation=n_simulation)
 # -------------------------
 # Use update_population to continue from previous result
 # -------------------------
-out_sm_mult_2 = update_population(out_sm_mult, config_sm_mult, n_simulation=n_simulation)
+out_sm_mult_2 = update_population(out_sm_mult, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_sm_mult = np.column_stack(out_sm_mult_2.population)
+# Population (n_particles × n_para)
+pop_sm_mult = out_sm_mult_2.population.T
 
 # Epsilon history
 eps_sm_mult = np.column_stack(out_sm_mult_2.state.epsilon_history)
