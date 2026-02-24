@@ -5,6 +5,8 @@ kernel automatically, giving parallel execution over particles with no change
 to user code.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -252,3 +254,28 @@ class FDistNumba:
         assert self._batch_kernel is not None  # guaranteed by _ensure_kernel
         self._batch_kernel(theta, y, ss, out, self.ss_obs, self._w_core)
         return out
+
+    # ------------------------------------------------------------------
+    # Clone support (for parallel_batches in sabc.py)
+    # ------------------------------------------------------------------
+    def clone(self, seed: int | None = None) -> FDistNumba:
+        """Create an independent copy with fresh scratch buffers.
+
+        ``FDistNumba`` has no Python-level RNG (Numba uses thread-local
+        random state inside ``prange``), so ``seed`` is accepted for API
+        consistency with ``FDist.clone()`` but is unused.
+
+        Args:
+            seed: Ignored.  Accepted for API consistency with ``FDist``.
+
+        Returns:
+            A new ``FDistNumba`` with the same kernels but its own buffers.
+        """
+        return FDistNumba(
+            n_samples=self.n_samples,
+            ss_obs=self.ss_obs.copy(),
+            simulator_nb=self.simulator_nb,
+            stats_fn_nb=self.stats_fn_nb,
+            distance=self.distance,
+            weights=self.weights.copy() if self.weights is not None else None,
+        )

@@ -25,6 +25,10 @@ The SABC algorithm supports both **single-ε** and **multi-ε** annealing scheme
   - All particle updates are processed in batch via NumPy (no Python per-particle loop)
   - Allocation-free distance evaluation with lazy 2-D buffers
   - In-place array operations throughout
+- **Thread-based parallelism**
+  - Multi-threaded simulator execution via `n_workers` in `make_f_dist`
+  - Concurrent half-batch population updates via `parallel_batches` in `SABCConfig`
+  - Both layers are composable and opt-in (serial by default)
 - **Optional Numba acceleration**
   - User-supplied single-particle `@njit` functions are automatically wrapped in a `prange` batch kernel
 - **Reproducibility by design**
@@ -171,10 +175,16 @@ f_dist = make_f_dist(
     stats_fn=stats_fn,
     seed=123,          # simulator-level randomness
     distance="abs",    # distance per statistic: abs(ss_sim-ss_obs)
+    n_workers=1,       # number of threads for simulator (default: 1)
 )
 ```
 
 Available distances: "abs", "sq", "weighted_sq". Default: "abs".
+
+Set `n_workers` > 1 to run the simulator in parallel using a `ThreadPoolExecutor`.
+This is effective when the simulator releases the GIL (e.g. NumPy array operations,
+RNG calls). Each worker gets its own RNG stream and scratch buffers. See
+[Parallelization](#parallelization) for details.
 
 ### 4. Configure and run SABC
 
@@ -212,6 +222,7 @@ result = sabc(config, n_simulation=1_000_000)
 | `algorithm` | `"single_eps"` | `"single_eps"` or `"multi_eps"` |
 | `resample` | `None` | Resampling interval (defaults to `2 * n_particles`) |
 | `proposal` | `None` | Proposal mechanism (defaults to `DifferentialEvolution`) |
+| `parallel_batches` | `False` | Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization). |
 | `rng` | `None` | Algorithm RNG (`np.random.Generator`) |
 | `seed` | `None` | Alternative to `rng` (creates one internally) |
 | `checkpoint_history` | 1 | Record histories every N updates |
@@ -319,6 +330,143 @@ The algorithm has **three independent sources of randomness**:
    - Each proposal object accepts its own `rng`
 
 For **fully reproducible runs**, all three sources must be fixed explicitly.
+
+---
+
+## Parallelization
+
+The library provides two composable parallelization layers, both using
+`ThreadPoolExecutor` and both opt-in (serial by default, zero overhead when
+unused).
+
+### Layer 1: Multi-threaded simulator (`n_workers`)
+
+Pass `n_workers` > 1 to `make_f_dist` to split each batch of particles across
+multiple threads for the simulator + summary-statistics step:
+
+```python
+f_dist = make_f_dist(
+    n_samples=1000,
+    ss_obs=ss_obs,
+    simulator=simulator,
+    stats_fn=stats_fn,
+    seed=123,
+    n_workers=4,       # split each batch across 4 threads
+)
+```
+
+Each worker gets its own RNG stream (spawned from the parent seed via
+`SeedSequence`) and its own scratch buffers (`y_buf`, `ss_buf`), so there
+are no data races. This is effective when the simulator spends most of its
+time in GIL-releasing operations (NumPy array ops, RNG calls) -- which is
+the typical case.
+
+`n_workers` is ignored when `fast=True` (Numba mode), since Numba manages
+its own thread pool via `prange`.
+
+### Layer 2: Concurrent half-batch updates (`parallel_batches`)
+
+Set `parallel_batches=True` in `SABCConfig` to run the two half-population
+updates concurrently. This is an emcee-style relaxation: both halves see a
+stale snapshot of the other half (instead of batch 2 seeing batch 1's freshly
+updated state).
+
+```python
+config = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=1000,
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    parallel_batches=True,   # concurrent half-batch updates
+    rng=rng_alg,
+)
+```
+
+When enabled, the library internally:
+
+- Clones the proposal into 2 instances with independent RNG streams
+- Clones `f_dist` into 2 instances with independent seeds and buffers
+- Allocates 2 sets of scratch buffers for accept/reject
+- Submits both half-batch updates to a `ThreadPoolExecutor(max_workers=2)`
+
+This changes MCMC dynamics (both halves see stale snapshots instead of
+the serial dependency), which is why it is opt-in. Statistically, this is
+the same relaxation used by the emcee ensemble sampler and is valid for
+the SABC algorithm.
+
+### Combining both layers
+
+Both layers compose naturally. Use `n_workers` for intra-batch parallelism
+(splitting each half-batch across threads) and `parallel_batches` for
+inter-batch parallelism (running both halves concurrently):
+
+```python
+f_dist = make_f_dist(
+    n_samples=1000,
+    ss_obs=ss_obs,
+    simulator=simulator,
+    stats_fn=stats_fn,
+    seed=123,
+    n_workers=4,
+)
+
+config = SABCConfig(
+    f_dist=f_dist,
+    prior=prior,
+    n_particles=1000,
+    proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
+    parallel_batches=True,
+    rng=rng_alg,
+)
+
+result = sabc(config, n_simulation=1_000_000)
+```
+
+In this configuration, each population update launches 2 half-batch tasks,
+each of which internally splits its simulator calls across 4 threads --
+up to 8 threads of useful work per update.
+
+### When to use each layer
+
+| Layer | Best for | Overhead |
+|-------|----------|----------|
+| `n_workers` | Expensive simulators with large `n_samples` | Thread pool + per-worker buffers |
+| `parallel_batches` | Large populations where each half-batch is substantial | Clone proposal + f_dist + 2-thread pool |
+| Both | Large populations with expensive simulators | Combined |
+
+For small toy problems, serial mode (the default) is typically fastest due
+to zero overhead.
+
+### Caveats
+
+**Thread-safety requirements.** Both parallelization layers use threads, not
+processes. Any user-supplied function that runs concurrently must be
+thread-safe:
+
+- **`prior.logpdf()`** is called from `_update_batch`, which runs in worker
+  threads when `parallel_batches=True`. The function must be stateless (no
+  mutation of shared data). Most priors (scipy distributions, pure-NumPy
+  implementations) satisfy this. A prior that mutates internal state (e.g.
+  caching intermediate results) will cause data races.
+- **`simulator`** and **`stats_fn`** are called from worker threads when
+  `n_workers` > 1. Each worker receives its own pre-allocated buffers and
+  its own RNG, so standard implementations that only write to the provided
+  output arrays are safe. A simulator that writes to global or shared state
+  will cause data races.
+
+**Core oversubscription.** Both layers create `ThreadPoolExecutor` pools.
+When combined (`n_workers=W` + `parallel_batches=True`), the total thread
+count is up to `2 * W`. If `W` already matches the number of physical cores,
+enabling `parallel_batches` on top will oversubscribe the CPU and may hurt
+rather than help. Additionally, NumPy itself may use multi-threaded BLAS
+(controlled by `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, etc.), which compounds
+the problem. As a rule of thumb:
+
+- Set `n_workers` to at most the number of physical cores.
+- If using `parallel_batches=True` alongside `n_workers`, reduce `n_workers`
+  to leave room for the second half-batch thread (e.g. `n_workers = cores // 2`).
+- If the simulator is already parallelized internally (e.g. via BLAS or
+  Numba `prange`), set `n_workers=1` and consider `parallel_batches` only.
 
 ---
 

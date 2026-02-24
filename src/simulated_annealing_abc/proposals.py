@@ -1,5 +1,7 @@
 """proposals.py — batch proposal generators for SABC."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -115,6 +117,26 @@ class RandomWalk(Proposal):
         n_para = cov.shape[0]
         self.Sigma = self.beta * (cov + 1e-8 * np.eye(n_para))
 
+    def clone(self, rng: np.random.Generator) -> RandomWalk:
+        """Create an independent copy with a different RNG.
+
+        Copies the current ``Sigma`` so the clone starts with the same
+        adapted jump distribution.
+
+        Args:
+            rng: Random number generator for the new instance.
+
+        Returns:
+            A new ``RandomWalk`` with the same config and ``Sigma`` but its own RNG.
+        """
+        n_para = 1 if np.isscalar(self.Sigma) else self.Sigma.shape[0]
+        new = RandomWalk(beta=self.beta, n_para=n_para, rng=rng)
+        if np.isscalar(self.Sigma):
+            new.Sigma = self.Sigma
+        else:
+            new.Sigma = self.Sigma.copy()
+        return new
+
 
 # -------------------------------------------------------
 # Differential Evolution proposal
@@ -186,6 +208,17 @@ class DifferentialEvolution(Proposal):
         """No-op for Differential Evolution."""
         return
 
+    def clone(self, rng: np.random.Generator) -> DifferentialEvolution:
+        """Create an independent copy with a different RNG.
+
+        Args:
+            rng: Random number generator for the new instance.
+
+        Returns:
+            A new ``DifferentialEvolution`` with the same config but its own RNG.
+        """
+        return DifferentialEvolution(gamma0=self.gamma0, sigma_gamma=self.sigma_gamma, rng=rng)
+
 
 # -------------------------------------------------------
 # Stretch Move proposal
@@ -241,3 +274,14 @@ class StretchMove(Proposal):
     def update(self, population: np.ndarray) -> None:
         """No-op for StretchMove."""
         return
+
+    def clone(self, rng: np.random.Generator) -> StretchMove:
+        """Create an independent copy with a different RNG.
+
+        Args:
+            rng: Random number generator for the new instance.
+
+        Returns:
+            A new ``StretchMove`` with the same config but its own RNG.
+        """
+        return StretchMove(a=self.a, rng=rng)
