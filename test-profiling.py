@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run profiling for the SABC implementation."""
 
+import argparse
 import logging
 
 import numba as nb
@@ -26,6 +27,24 @@ logging.basicConfig(
 )
 
 LOG.setLevel(logging.DEBUG)
+
+
+def init_args() -> dict:
+    """Initialize arguments."""
+    parser = argparse.ArgumentParser(
+        description="Frontmatter helper.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Use fast mode, in which the simulator and stats_fn are implemented in Numba.",
+    )
+
+    args = vars(parser.parse_args())
+    LOG.info(f"Arguments: {args}")
+    return args
 
 
 class Prior:
@@ -118,6 +137,8 @@ def stats_fn_nb(y, ss):
 
 
 if __name__ == "__main__":
+    args = init_args()
+
     true_mu = 10.0
     true_sigma = 15.0
     np.random.seed(1822)
@@ -131,7 +152,7 @@ if __name__ == "__main__":
     stats_fn(y_obs.reshape(1, -1), ss_obs)
     ss_obs = ss_obs.ravel()
 
-    FAST = True
+    FAST = args["fast"]
 
     f_dist = make_f_dist(
         n_samples=1000,
