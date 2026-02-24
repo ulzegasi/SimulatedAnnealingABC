@@ -573,6 +573,8 @@ f_dist_fast = make_f_dist(
 )
 ```
 
+The standard `simulator` and `stats_fn` arguments can be omitted when using `fast=True`.
+
 **Requirements for Numba mode:**
 
 - `simulator(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.

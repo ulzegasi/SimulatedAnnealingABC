@@ -257,6 +257,13 @@ class FDistNumba:
         ss = self._ss[:n_batch_particles]
 
         n_stats = self.ss_obs.size
+
+        self._ensure_buffers(n_batch_particles)
+        self._ensure_kernel()
+
+        y = self._y[:n_batch_particles]
+        ss = self._ss[:n_batch_particles]
+
         if out is None:
             out = np.empty((n_batch_particles, n_stats), dtype=np.float64)
         else:
