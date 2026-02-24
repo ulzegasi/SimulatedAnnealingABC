@@ -339,9 +339,9 @@ f_dist = make_f_dist(
 f_dist_fast = make_f_dist(
     n_samples=n_samples,
     ss_obs=ss_obs,
-    fast=True,
-    simulator_nb=simulator_nb,
-    stats_fn_nb=stats_fn_nb,
+    use_numba=True,
+    simulator=simulator_nb,
+    stats_fn=stats_fn_nb,
 )
 
 tmp = np.empty((1, 2), dtype=np.float64)

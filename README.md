@@ -361,8 +361,9 @@ are no data races. This is effective when the simulator spends most of its
 time in GIL-releasing operations (NumPy array ops, RNG calls) -- which is
 the typical case.
 
-`n_workers` is ignored when `fast=True` (Numba mode), since Numba manages
-its own thread pool via `prange`.
+`n_workers` controls parallelism in both modes: in NumPy mode it sets the
+`ThreadPoolExecutor` thread count; in Numba mode (`use_numba=True`) it
+controls `nb.set_num_threads()` for Numba's `prange` thread pool.
 
 ### Layer 2: Concurrent half-batch updates (`parallel_batches`)
 
@@ -505,7 +506,7 @@ This version:
 
 ### Numba-accelerated mode (advanced)
 
-To enable the fast path, provide **single-particle** Numba-compiled versions of the simulator and summary-statistics functions and set `fast=True`. The library automatically wraps them in a `numba.prange` batch kernel, so they are executed in parallel across particles:
+To enable the Numba path, provide **single-particle** Numba-compiled versions of the simulator and summary-statistics functions and pass `use_numba=True` to `make_f_dist`. The library automatically wraps them in a `numba.prange` batch kernel, so they are executed in parallel across particles:
 
 ```python
 @nb.njit(cache=True)
@@ -534,20 +535,19 @@ def stats_fn_nb(y, ss):
 f_dist_fast = make_f_dist(
     n_samples=n_samples,
     ss_obs=ss_obs,
-    fast=True,
-    simulator_nb=simulator_nb,   # @numba.njit, single-particle
-    stats_fn_nb=stats_fn_nb,     # @numba.njit, single-particle
+    use_numba=True,
+    n_workers=4,                 # controls nb.set_num_threads()
+    simulator=simulator_nb,      # @numba.njit, single-particle
+    stats_fn=stats_fn_nb,        # @numba.njit, single-particle
 )
 ```
 
-The standard `simulator` and `stats_fn` arguments can be omitted when using `fast=True`.
-
 **Requirements for Numba mode:**
 
-- `simulator_nb(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.
-- `stats_fn_nb(y, ss)` — single-particle: `y` is 1-D `(n_samples,)`, `ss` is 1-D `(n_stats,)`. Fills `ss` in-place.
+- `simulator(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.
+- `stats_fn(y, ss)` — single-particle: `y` is 1-D `(n_samples,)`, `ss` is 1-D `(n_stats,)`. Fills `ss` in-place.
 - Both functions must be compiled with `@numba.njit`
 - The library internally wraps them in a `numba.prange` loop, so the user writes only the per-particle logic
 - Avoid per-call allocations inside the Numba functions for best performance
 
-If Numba is not installed, attempting to use `fast=True` raises an informative error.
+If Numba is not installed, attempting to pass `use_numba=True` raises an informative error.

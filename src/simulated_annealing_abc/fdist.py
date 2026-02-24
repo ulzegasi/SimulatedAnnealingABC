@@ -346,20 +346,17 @@ def make_f_dist(
     *,
     n_samples: int,
     ss_obs: np.ndarray,
-    simulator: SimulatorFn | None = None,
-    stats_fn: StatsFn | None = None,
+    simulator: SimulatorFn,
+    stats_fn: StatsFn,
     seed: int | None = None,
     distance: DistanceMode = "abs",
     weights: np.ndarray | None = None,
-    fast: bool = False,
-    simulator_nb=None,
-    stats_fn_nb=None,
+    use_numba: bool = False,
     n_workers: int = 1,
 ):
     """Build a picklable distance function ``f_dist(theta_batch, out=None)``.
 
-    Pure NumPy mode (default, ``fast=False``):
-      - Requires ``simulator`` and ``stats_fn``.
+    Pure NumPy mode (default, ``use_numba=False``):
       - ``simulator(theta, y, rng)`` fills ``y`` in-place.
         ``theta`` has shape ``(n_batch_particles, n_para)``, ``y`` has shape
         ``(n_batch_particles, n_samples)``.
@@ -368,51 +365,51 @@ def make_f_dist(
         ``(n_batch_particles, n_stats)``.
       - Returns elementwise distances ``|ss - ss_obs|`` (or squared / weighted squared).
 
-    Optional Numba mode (``fast=True``):
-      - Requires ``simulator_nb`` and ``stats_fn_nb`` (both njit-compiled).
-      - These operate on **single particles**: ``simulator_nb(theta, y)`` with
-        ``theta`` shape ``(n_para,)`` and ``y`` shape ``(n_samples,)``.
-      - The library wraps them in a parallel batch kernel automatically.
-      - ``simulator`` and ``stats_fn`` are not needed and can be omitted.
-      - ``n_workers`` is ignored (Numba uses its own thread pool via ``prange``).
+    Numba mode (``use_numba=True``):
+      - ``simulator`` and ``stats_fn`` must be ``@numba.njit``-compiled
+        **single-particle** functions.
+      - ``simulator(theta, y)`` — ``theta`` shape ``(n_para,)``, ``y`` shape
+        ``(n_samples,)``.  Fills ``y`` in-place.  No ``rng`` argument (use
+        ``np.random`` inside the Numba kernel).
+      - ``stats_fn(y, ss)`` — ``y`` shape ``(n_samples,)``, ``ss`` shape
+        ``(n_stats,)``.  Fills ``ss`` in-place.
+      - The library wraps them in a ``numba.prange`` batch kernel automatically.
+      - ``n_workers`` controls Numba's thread count via
+        ``numba.set_num_threads()``.
+      - ``seed`` is ignored (Numba manages its own RNG via thread-local state).
 
     Args:
         n_samples: Size of the simulated dataset per forward-model call.
         ss_obs: Observed summary statistics (1-D).
-        simulator: Batch simulator function (pure NumPy mode).
-        stats_fn: Batch summary-statistics function (pure NumPy mode).
+        simulator: Simulator function.  Batch (pure NumPy) or single-particle
+            (Numba) depending on ``use_numba``.
+        stats_fn: Summary-statistics function.  Batch (pure NumPy) or
+            single-particle (Numba) depending on ``use_numba``.
         seed: RNG seed for the simulator (pure NumPy mode only).
         distance: Distance mode (``"abs"``, ``"sq"``, or ``"weighted_sq"``).
         weights: Weights array for ``"weighted_sq"`` distance.
-        fast: If ``True``, use Numba-accelerated mode.
-        simulator_nb: Numba-jitted single-particle simulator (Numba mode).
-        stats_fn_nb: Numba-jitted single-particle stats function (Numba mode).
-        n_workers: Number of parallel threads for the simulator (pure NumPy
-            mode only).  Defaults to ``1`` (single-threaded).
+        use_numba: If ``False`` (default), use pure NumPy mode.  If ``True``,
+            use Numba-accelerated mode.
+        n_workers: In NumPy mode, number of parallel threads for the simulator.
+            In Numba mode, number of Numba ``prange`` threads (controls
+            ``numba.set_num_threads()``).  Defaults to ``1``.
 
     Returns:
         A callable ``f_dist(theta_batch, out=None) -> np.ndarray``.
     """
     # ---- optional Numba fast path (kept separate to keep numba truly optional)
-    if fast:
-        if simulator_nb is None or stats_fn_nb is None:
-            raise ValueError("fast=True requires simulator_nb and stats_fn_nb.")
+    if use_numba:
         from .fdist_numba import FDistNumba  # local import: optional dependency
 
         return FDistNumba(
             n_samples=n_samples,
             ss_obs=np.asarray(ss_obs, dtype=np.float64).reshape(-1),
-            simulator_nb=simulator_nb,
-            stats_fn_nb=stats_fn_nb,
+            simulator=simulator,
+            stats_fn=stats_fn,
             distance=distance,
             weights=weights,
+            n_workers=n_workers,
         )
-
-    # ---- validate required args for pure NumPy path
-    if simulator is None:
-        raise ValueError("simulator is required when fast=False (pure NumPy mode).")
-    if stats_fn is None:
-        raise ValueError("stats_fn is required when fast=False (pure NumPy mode).")
 
     return FDist(
         n_samples=n_samples,

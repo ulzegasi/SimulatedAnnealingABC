@@ -7,12 +7,15 @@ to user code.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
 
 from .fdist import DistanceMode
+
+LOG = logging.getLogger(__name__)
 
 try:
     import numba as nb
@@ -23,18 +26,18 @@ except ImportError:
 
 
 # ======================================================================
-# Single-particle kernel (unchanged from original)
+# Single-particle kernel
 # ======================================================================
 def _build_numba_kernel(
-    simulator_nb,
-    stats_fn_nb,
+    simulator,
+    stats_fn,
     distance: DistanceMode,
 ):
     """Construct ``@njit`` core + transform functions for one particle.
 
     Args:
-        simulator_nb: Numba-jitted simulator.
-        stats_fn_nb: Numba-jitted summary-statistics function.
+        simulator: Numba-jitted single-particle simulator.
+        stats_fn: Numba-jitted single-particle summary-statistics function.
         distance: Distance mode.
 
     Returns:
@@ -69,8 +72,8 @@ def _build_numba_kernel(
 
     @nb.njit(cache=True)
     def _core(theta, y, ss, out, ss_obs, w_in):
-        simulator_nb(theta, y)
-        stats_fn_nb(y, ss)
+        simulator(theta, y)
+        stats_fn(y, ss)
         for j in range(out.size):
             out[j] = ss[j] - ss_obs[j]
         _transform(out, w_in)
@@ -116,27 +119,30 @@ class FDistNumba:
     pickle.  Numba's on-disk cache (``cache=True``) ensures that subsequent
     rebuilds after deserialization are fast.
 
-    User-supplied ``simulator_nb`` and ``stats_fn_nb`` operate on **single
-    particles** (1-D arrays).  The library wraps them in a ``prange`` batch
+    User-supplied ``simulator`` and ``stats_fn`` must be ``@numba.njit``-compiled
+    **single-particle** functions.  The library wraps them in a ``prange`` batch
     kernel automatically.
 
     Args:
         n_samples: Size of the simulated dataset per forward-model call.
         ss_obs: Observed summary statistics (1-D).
-        simulator_nb: Numba-jitted simulator. Signature: ``simulator_nb(theta, y) -> None``
+        simulator: Numba-jitted simulator. Signature: ``simulator(theta, y) -> None``
             where ``theta`` is 1-D ``(n_para,)`` and ``y`` is 1-D ``(n_samples,)``.
-        stats_fn_nb: Numba-jitted stats function. Signature: ``stats_fn_nb(y, ss) -> None``
+        stats_fn: Numba-jitted stats function. Signature: ``stats_fn(y, ss) -> None``
             where ``y`` is 1-D ``(n_samples,)`` and ``ss`` is 1-D ``(n_stats,)``.
         distance: Distance mode (``"abs"``, ``"sq"``, or ``"weighted_sq"``).
         weights: Weights array for ``"weighted_sq"`` distance.
+        n_workers: Number of Numba threads for ``prange`` execution.
+            Controls ``numba.set_num_threads()`` on first call.
     """
 
     n_samples: int
     ss_obs: np.ndarray
-    simulator_nb: Callable
-    stats_fn_nb: Callable
+    simulator: Callable
+    stats_fn: Callable
     distance: DistanceMode = "abs"
     weights: np.ndarray | None = None
+    n_workers: int = 1
 
     # Transient state — excluded from pickle, rebuilt lazily
     _kernel: Callable | None = field(init=False, repr=False, compare=False, default=None)
@@ -144,6 +150,7 @@ class FDistNumba:
     _y: np.ndarray = field(init=False, repr=False, compare=False)
     _ss: np.ndarray = field(init=False, repr=False, compare=False)
     _w_core: np.ndarray = field(init=False, repr=False, compare=False)
+    _threads_set: bool = field(init=False, repr=False, compare=False, default=False)
 
     def __post_init__(self):
         """Validate inputs and initialise transient state."""
@@ -161,6 +168,9 @@ class FDistNumba:
                 raise ValueError(f"weights must have shape ({n_stats},), got {self.weights.shape}.")
         elif self.distance not in ("abs", "sq"):
             raise ValueError(f"Unknown distance='{self.distance}'.")
+
+        if self.n_workers < 1:
+            raise ValueError(f"n_workers must be >= 1, got {self.n_workers}.")
 
         self._init_buffers()
 
@@ -181,6 +191,7 @@ class FDistNumba:
         )
         self._kernel = None
         self._batch_kernel = None
+        self._threads_set = False
 
     def _ensure_buffers(self, n_batch_particles: int) -> None:
         """Grow scratch buffers if the current batch size exceeds capacity."""
@@ -189,11 +200,15 @@ class FDistNumba:
             self._ss = np.empty((n_batch_particles, self.ss_obs.size), dtype=np.float64)
 
     def _ensure_kernel(self):
-        """Build the Numba kernels on first call (lazy JIT)."""
+        """Build the Numba kernels on first call (lazy JIT) and set thread count."""
+        if not self._threads_set:
+            nb.set_num_threads(self.n_workers)
+            LOG.debug(f"Numba thread count set to {self.n_workers}.")
+            self._threads_set = True
         if self._kernel is None:
             self._kernel = _build_numba_kernel(
-                self.simulator_nb,
-                self.stats_fn_nb,
+                self.simulator,
+                self.stats_fn,
                 self.distance,
             )
         if self._batch_kernel is None:
@@ -205,7 +220,7 @@ class FDistNumba:
     def __getstate__(self):
         """Exclude transient buffers and kernel from pickle."""
         state = self.__dict__.copy()
-        for key in ("_kernel", "_batch_kernel", "_y", "_ss", "_w_core"):
+        for key in ("_kernel", "_batch_kernel", "_y", "_ss", "_w_core", "_threads_set"):
             state.pop(key, None)
         return state
 
@@ -274,8 +289,9 @@ class FDistNumba:
         return FDistNumba(
             n_samples=self.n_samples,
             ss_obs=self.ss_obs.copy(),
-            simulator_nb=self.simulator_nb,
-            stats_fn_nb=self.stats_fn_nb,
+            simulator=self.simulator,
+            stats_fn=self.stats_fn,
             distance=self.distance,
             weights=self.weights.copy() if self.weights is not None else None,
+            n_workers=self.n_workers,
         )
