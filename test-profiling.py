@@ -37,9 +37,22 @@ def init_args() -> dict:
     )
 
     parser.add_argument(
-        "--fast",
+        "--use-numba",
         action="store_true",
         help="Use fast mode, in which the simulator and stats_fn are implemented in Numba.",
+    )
+
+    parser.add_argument(
+        "--parallel-batch",
+        action="store_true",
+        help="Calculate batches in parallel",
+    )
+    parser.add_argument(
+        "--fdist-workers",
+        type=int,  # convert the argument to int
+        required=False,  # optional; omit if you want it mandatory
+        default=1,  # fallback when the flag isn’t provided
+        help="number of workers for f_dist (default: 1)",
     )
 
     args = vars(parser.parse_args())
@@ -152,8 +165,6 @@ if __name__ == "__main__":
     stats_fn(y_obs.reshape(1, -1), ss_obs)
     ss_obs = ss_obs.ravel()
 
-    FAST = args["fast"]
-
     f_dist = make_f_dist(
         n_samples=1000,
         ss_obs=ss_obs,
@@ -161,9 +172,10 @@ if __name__ == "__main__":
         stats_fn=stats_fn,
         seed=123,  # simulator-level randomness
         distance="abs",  # distance per statistic: abs(ss_sim-ss_obs)
-        fast=FAST,
+        fast=args["use_numba"],
         simulator_nb=simulator_nb,
         stats_fn_nb=stats_fn_nb,
+        n_workers=args["fdist_workers"],
     )
 
     rng_alg = np.random.default_rng(18)
@@ -178,6 +190,7 @@ if __name__ == "__main__":
         algorithm="single_eps",  # or "multi_eps"
         proposal=DifferentialEvolution(n_para=2, rng=rng_prop),
         rng=rng_alg,
+        parallel_batches=args["parallel_batch"],
     )
 
     result = sabc(config, n_simulation=1_000_000)
