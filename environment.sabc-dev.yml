@@ -1,22 +1,23 @@
 ---
 name: sabc-dev
+extends:
+  - file: environment.sabc.yml
 channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - python=3.14
-  - ipykernel # vscode
-  - ipywidgets # other jupyter func.
-  - rich # nice logging
+  - ipykernel
+  - ipywidgets
+  - rich
+  - tqdm
   - nodejs
   - uv
+  - ty
+  - ruff
   - emcee
-  - numpy
-  - scipy
-  - numba
   - matplotlib
-  - tqdm
   - pytest
+  - pytest-cov
   - jupytext
   - pip:
     - scalene

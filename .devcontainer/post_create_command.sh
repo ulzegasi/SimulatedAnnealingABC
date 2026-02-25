@@ -3,7 +3,7 @@
 env_name="sabc-dev"
 
 # ## install env
-micromamba create --file environment.${env_name:?}.yml --yes
+micromamba create --name ${env_name:?} --file environment.sabc.yml --file environment.${env_name:?}.yml --yes
 # ## clean pip cache
 micromamba run -n ${env_name} python -m pip cache purge
 # ## clean micromamba cache

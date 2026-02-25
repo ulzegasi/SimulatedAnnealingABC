@@ -60,8 +60,8 @@ cd SimulatedAnnealingABC
 Create the Conda environment from the provided file:
 
 ```bash
-conda env create -f environment.yml
-conda activate sabc_env
+conda env create -f environment.sabc.yml
+conda activate sabc
 ```
 
 **Note**
@@ -73,6 +73,8 @@ The code currently targets Python ≥ 3.14.
 
 Setting up the devcontainer will install `environment.sabc-dev.yml`.
 So this environment should be used.
+
+For development setup, linting, testing with coverage, and other dev tools, see [AGENTS.md](AGENTS.md).
 
 ### Running Tests
 

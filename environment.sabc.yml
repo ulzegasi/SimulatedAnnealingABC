@@ -1,0 +1,11 @@
+name: sabc
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14
+  - numpy
+  - scipy
+  - numba
+  - pip:
+    - .
