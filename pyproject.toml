@@ -13,6 +13,11 @@ dependencies = [
     "scipy",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ulzegasi/SimulatedAnnealingABC"
+Source = "https://github.com/ulzegasi/SimulatedAnnealingABC"
+"Bug Tracker" = "https://github.com/ulzegasi/SimulatedAnnealingABC/issues"
+
 [project.optional-dependencies]
 numba = ["numba"]
 viz = ["tqdm", "rich", "matplotlib"]
