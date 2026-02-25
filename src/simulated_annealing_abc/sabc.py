@@ -16,7 +16,6 @@ from .helper import track_progress
 from .proposals import (
     DifferentialEvolution,
     Proposal,
-    update_proposal,
 )
 
 LOG = logging.getLogger(__name__)
@@ -80,7 +79,7 @@ class SABCConfig:
     # Display / checkpointing
     checkpoint_history: int = 1
     show_progressbar: bool | None = None
-    show_checkpoint: float | int | None = None
+    show_checkpoint: float | int | None = 100
 
     def __post_init__(self):
         """Validate configuration."""
@@ -570,7 +569,7 @@ def _iteration_tail(
 
     # Update all proposal instances from the full population
     for prop in proposals:
-        update_proposal(prop, population)
+        prop.update(population)
 
     # Update epsilon
     if state.algorithm == "multi_eps":
@@ -589,7 +588,7 @@ def _iteration_tail(
         n_population_updates,
         t_start,
         config.checkpoint_history,
-        config.show_checkpoint if config.show_checkpoint is not None else 100,
+        config.show_checkpoint,
     )
 
     return population, u, rho, logprior
@@ -919,7 +918,7 @@ def update_population(
         config.resample = 2 * n_particles
 
     # Estimate jump covariance from current population
-    update_proposal(proposal, population_state.population)
+    proposal.update(population_state.population)
 
     # ---------------------
     # Each population update requires n_particles simulations

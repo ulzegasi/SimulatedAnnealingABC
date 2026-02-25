@@ -24,12 +24,6 @@ class Proposal:
 
     def update(self, population: np.ndarray) -> None:
         """Recompute internal state from the current population (optional)."""
-        return
-
-
-def update_proposal(proposal: Proposal, population: np.ndarray) -> None:
-    """Update proposal distribution from the current population."""
-    proposal.update(population)
 
 
 # -------------------------------------------------------
@@ -204,10 +198,6 @@ class DifferentialEvolution(Proposal):
         proposal = theta + gamma[:, np.newaxis] * (pop[i1] - pop[i2])
         return proposal, np.zeros(n_batch_particles)
 
-    def update(self, population: np.ndarray) -> None:
-        """No-op for Differential Evolution."""
-        return
-
     def clone(self, rng: np.random.Generator) -> DifferentialEvolution:
         """Create an independent copy with a different RNG.
 
@@ -270,10 +260,6 @@ class StretchMove(Proposal):
         log_factors = np.log(z) * (n_para - 1)
         proposal = partners + z[:, np.newaxis] * (theta - partners)
         return proposal, log_factors
-
-    def update(self, population: np.ndarray) -> None:
-        """No-op for StretchMove."""
-        return
 
     def clone(self, rng: np.random.Generator) -> StretchMove:
         """Create an independent copy with a different RNG.
