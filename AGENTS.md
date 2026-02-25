@@ -1,186 +1,238 @@
 # AGENTS.md
 
-# Guidance for agentic coding in this repo
+Guidelines for AI agents working in the SimulatedAnnealingABC repository.
 
-This repository is a Python 3.10+ codebase for Simulated Annealing ABC (SABC)
-with optional Numba acceleration. There is no formal build system or test
-runner; most validation happens via runnable scripts and notebooks in the
-repository root.
+## Quick Start
 
--------------------------------------------------------------------------------
+**Note:** Run `make env-dev` first to create the development environment.
 
-Quick commands (build / lint / test)
--------------------------------------------------------------------------------
+```bash
+make env-dev          # Create dev environment (recommended, includes ruff, ty, pytest, etc.)
+make test             # Run fast tests
+make lint             # Lint code
+make format           # Format code
+```
 
-Environment
+For venv/system Python, use `make install-dev` instead (fewer dev tools pre-installed).
 
--   Create env (conda):
-    +   `conda env create -f environment.yml`
-    +   `conda activate sabc_env`
--   Python target: >= 3.14 (see `environment.yml` and `README.md`).
+## Build & Development Setup
 
-Build
+### Devcontainer (Recommended)
 
--   No packaging/build command detected (no `pyproject.toml`, `setup.cfg`, etc.).
--   Treat the source as importable from `src/` when running scripts.
-    +   Example: `python -c "import sys; sys.path.append('src')"` if needed.
+The devcontainer automatically sets up the sabc-dev environment with all dependencies and tools.
+The post-create command also installs:
 
-Lint / format
+-   npm packages: `opencode-ai`, `markdownlint-cli2`, formatters
+-   Symlinks opencode auth.json if available
 
--   No linter or formatter configured in repo.
--   Do not introduce new tooling unless explicitly requested.
+### Manual Setup
 
-Tests
+```bash
+make env-dev          # Create conda dev environment (includes all dependencies)
+```
 
--   No pytest or unit test framework configured.
--   Validation is performed via runnable scripts/notebooks in repo root.
--   Example full runs:
-    +   `python tests_2stats.py`
-    +   `python tests_3stats.py`
-    +   `python tests_3stats_withNoise.py`
--   Single test run (closest equivalent): run one script file:
-    +   `python tests_3stats.py`
-    +   `python tests_2stats.py`
+## Development Commands
 
-Notebook parity
+|  Command             |  Description                           |
+| -------------------- | -------------------------------------- |
+|  `make env`          |  Create runtime environment            |
+|  `make env-dev`      |  Create dev environment (recommended)  |
+|  `make install`      |  Install package with pip (editable)   |
+|  `make install-dev`  |  Install with pip + all optional deps  |
+|  `make lint`         |  Lint code with ruff                   |
+|  `make lint-fix`     |  Auto-fix lint issues                  |
+|  `make format`       |  Format code                           |
+|  `make lint-md`      |  Lint markdown files                   |
+|  `make lint-md-fix`  |  Auto-fix markdown issues              |
+|  `make typecheck`    |  Type check with ty                    |
+|  `make test`         |  Run fast tests                        |
+|  `make test-all`     |  Run all tests                         |
+|  `make test-slow`    |  Run integration tests                 |
+|  `make test-cov`     |  Run tests with coverage               |
+|  `make test-html`    |  Generate HTML coverage report         |
+|  `make notebooks`    |  Regenerate .ipynb from .py files      |
+|  `make clean`        |  Clean up cache files                  |
+|  `make clean-cache`  |  Clean pip, micromamba, npm caches     |
 
--   The `tests_*.py` files are Jupytext paired with notebooks.
--   If editing notebook logic, keep the `.py` script consistent with the
-  corresponding `.ipynb` in the repository root.
+## Dependency Management
 
--------------------------------------------------------------------------------
+|  File                        |  Purpose                             |
+| ---------------------------- | ------------------------------------ |
+|  `pyproject.toml`            |  pip dependencies (source of truth)  |
+|  `environment.sabc.yml`      |  Conda runtime environment           |
+|  `environment.sabc-dev.yml`  |  Conda dev environment               |
 
-Code style and conventions
--------------------------------------------------------------------------------
+When adding a new dependency:
 
-General
+1.  Add to **pyproject.toml** (source of truth)
+2.  Add to **environment.sabc.yml** (conda runtime)
+3.  Add dev-only tools to **environment.sabc-dev.yml**
 
--   Target Python 3.14; type hints use PEP 604 (`X | Y`).
--   Prefer NumPy arrays, typed with `np.ndarray`, and explicit dtypes.
--   Favor allocation-free, in-place operations in performance-critical paths.
+## Code Style
 
-Imports
+### Python Version & RNG
 
--   Group imports as: standard library, third-party, local package.
--   Prefer explicit imports over wildcard.
--   Internal imports use absolute package paths (e.g. `simulated_annealing_abc`).
--   Local/optional imports inside functions are used to avoid hard dependencies
-  (e.g. numba optional path in `fdist.py`).
+-   Python >= 3.10
+-   Use `np.random.Generator` everywhere (never legacy `np.random.RandomState`)
+-   Use `np.random.default_rng(seed)` when creating generators
 
-Formatting
+### Formatting
 
--   Indent with 4 spaces.
--   Line length is not explicitly enforced; keep lines readable and avoid very
-  long lines unless a scientific formula is clearer that way.
--   Inline comments are used sparingly and only when behavior is non-obvious.
+-   **Line length: 100** (enforced by ruff)
+-   **4-space indentation** (standard Python)
+-   Minimal comments — only for non-obvious logic
+-   No `print()` in library code
 
-Naming
+### Imports
 
--   Modules: `snake_case.py`.
--   Functions and variables: `snake_case`.
--   Classes and dataclasses: `CapWords`.
--   Constants: `UPPER_SNAKE_CASE` (rare here; prefer local variables).
--   Use descriptive names for buffers and arrays (e.g. `rho_prop_buf`).
+Standard library, then third-party, then local. Ruff enforces isort ordering (`I` rule).
+Use **relative imports** within the `src/simulated_annealing_abc/` package.
 
-Types and APIs
+```python
+import logging
+import math
+from dataclasses import dataclass
+from typing import Callable
 
--   Functions accept and return `np.ndarray` where possible.
--   Accept `np.random.Generator` for RNG; if `seed` is provided, it must be used
-  to construct a generator locally.
--   Public API is re-exported in `src/simulated_annealing_abc/__init__.py` and
-  should be kept stable.
+import numpy as np
+from scipy.optimize import root_scalar
 
-Numerical patterns
+from .cdf_estimators import build_cdf
+from .helper import track_progress
+from .proposals import DifferentialEvolution, Proposal
+```
 
--   Use in-place NumPy operations to reduce allocations (e.g. `np.subtract` with
-  `out=...`, `np.abs(out, out=out)` in `fdist.py`).
--   Preallocate scratch buffers in tight loops and reuse them.
--   Avoid changing array shapes inside inner loops; validate once up front.
--   Use `np.isfinite` checks where log-probabilities are involved (e.g. reject
-  when `logprior` is not finite).
+Test files use **absolute imports**: `from simulated_annealing_abc import ...`.
 
-Error handling
+### Type Hints
 
--   Fail fast on invalid inputs with `ValueError` or `TypeError`.
--   Use `RuntimeError` for algorithmic failures (e.g. root finding failures).
--   Use `warnings.warn(..., RuntimeWarning)` for soft failures that still allow
-  returning a partially valid result.
+-   Modern union syntax: `X | None` (not `Optional[X]`)
+-   Use `np.ndarray` for array types, `np.float64` for explicit dtypes
+-   Type aliases for callables:
+  `SimulatorFn = Callable[[np.ndarray, np.ndarray, np.random.Generator], None]`
+-   All function signatures must have type hints:
 
-Logging / output
+```python
+def sabc(
+    config: SABCConfig,
+    n_simulation: int = 10_000,
+) -> SABCResult:
+```
 
--   The algorithm writes informational messages to stderr via a small helper
-  (see `info(...)` in `sabc.py`).
--   Prefer deterministic logs and avoid excessive prints inside inner loops.
+### Naming
 
-Progress bars
+-   Classes: `PascalCase` — `SABCResult`, `SABCConfig`, `DifferentialEvolution`, `StretchMove`
+-   Functions/variables: `snake_case` — `update_population`, `resample_population`
+-   Constants: `UPPER_SNAKE_CASE` — `LOG`
+-   Private: leading underscore — `_check_prior`, `_prepare_cdf_1d`
 
--   `tqdm` is used when available; otherwise fall back to plain loops.
--   The decision for interactivity uses `is_interactive()` and is not
-  configurable via environment variables at the moment.
+### Error Handling
 
-Reproducibility
+-   `ValueError` for invalid arguments
+-   `TypeError` for wrong types
+-   `RuntimeError` for algorithmic failures (convergence, etc.)
+-   Always include variable values in messages:
 
--   There are three independent RNG streams in the system:
-  1)  simulator / distance
-  2)  SABC algorithm
-  3)  proposal mechanism
--   Keep these independent; do not reuse a single RNG in all layers.
+```python
+raise ValueError(f"`n_simulation={n_simulation}` too small for {n_particles} particles.")
+```
 
-Algorithm-specific guidelines
+### Logging
 
--   Distances (`rho`) must be non-negative; enforce and validate this invariant.
--   Avoid negative or zero weights for the `weighted_sq` distance mode.
--   Keep epsilon updates stable; when using series expansions, prefer numeric
-  stability helpers like `math.expm1`.
--   When resampling returns new arrays, reattach them to `SABCResult` to keep
-  references consistent.
+Use module-level logger: `LOG = logging.getLogger(__name__)`.
+Use `LOG.info()`, `LOG.debug()`, `LOG.warning()`. No `print()` in library code.
 
-Optional Numba path
+### Docstrings
 
--   Numba is optional; do not require it for baseline functionality.
--   Fast path lives in `fdist_numba.py` and should accept njit-compiled functions
-  that fill outputs in-place.
+Google-style (enforced by ruff `D` rule with `convention = "google"`):
 
-File locations and conventions
+```python
+def resample_population(
+    population: np.ndarray, rho: np.ndarray, delta: float, rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Resample population based on importance weights.
 
--   Core algorithm: `src/simulated_annealing_abc/sabc.py`.
--   Distance builder: `src/simulated_annealing_abc/fdist.py`.
--   Proposals: `src/simulated_annealing_abc/proposals.py`.
--   Persistence: `src/simulated_annealing_abc/io.py`.
--   Notebook-backed tests: `tests_*.py` and `tests_*.ipynb` in repo root.
+    Args:
+        population: Current particle positions.
+        rho: User-defined distances.
+        delta: Resampling parameter.
+        rng: Random number generator.
 
--------------------------------------------------------------------------------
+    Returns:
+        Tuple of resampled arrays and ESS.
+    """
+```
 
-Repository-specific notes for agents
--------------------------------------------------------------------------------
+### Numerical Performance
 
--   No Cursor rules found (`.cursor/rules/` or `.cursorrules`).
--   No GitHub Copilot instructions found (`.github/copilot-instructions.md`).
--   `.env` is present but ignored by git; do not read or commit secrets.
--   Use `src/` as the package root for imports when running scripts directly.
+-   In-place array operations: `y[:] = rng.normal(...)`, `np.abs(out, out=out)`
+-   Preallocate buffers; avoid allocations in hot loops
+-   Numba acceleration is optional (pass `use_numba=True` to `make_f_dist`)
 
--------------------------------------------------------------------------------
+### Data Classes
 
-When adding new code
--------------------------------------------------------------------------------
+`@dataclass` for result containers and config; `@dataclass(init=False)` for proposals
+with custom `__init__`.
 
--   Follow existing API patterns in `__init__.py` when exposing new public
-  functions or classes.
--   Maintain numpy-first semantics and avoid Python loops in hot paths unless
-  necessary.
--   Add type hints for public functions and data containers.
--   Keep RNG handling explicit (`rng` vs `seed`); error if both are supplied.
--   If introducing a new example or test, mirror the Jupytext pairing style.
+### Jupyter Notebooks
 
--------------------------------------------------------------------------------
+The `.py` files in `examples/notebooks/` are paired with Jupyter notebooks via jupytext's `percent` format.
+**The `.py` files are the source of truth** — never manually edit `.ipynb` files.
 
-Suggested verification workflow for changes
--------------------------------------------------------------------------------
+```bash
+make notebooks   # Regenerate .ipynb files from .py sources
+```
 
--   Run the relevant script for your change, e.g.:
-    +   `python tests_2stats.py`
-    +   `python tests_3stats.py`
--   If your change touches `make_f_dist`, run a distance-check script and verify
-  the returned shape/dtype in `f_dist` for a single call.
--   If your change touches proposal logic, run a short sampling run with a small
-  `n_simulation` to sanity-check acceptance.
+## Architecture
+
+### Package Layout (`src/simulated_annealing_abc/`)
+
+|  Module               |  Purpose                                                                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|  `sabc.py`            |  Core algorithm: `sabc()`, `update_population()`, `SABCConfig`, `SABCResult`, `SABCState`. Supports `parallel_batches` for concurrent half-batch updates.                     |
+|  `proposals.py`       |  `Proposal`, `RandomWalk`, `DifferentialEvolution`, `StretchMove`. Each has a `clone(rng)` method for creating independent copies.                                            |
+|  `fdist.py`           |  `FDist`, `make_f_dist()` — builds allocation-free distance functions. Supports `n_workers` for multi-threaded simulator execution and `clone(seed)` for independent copies.  |
+|  `fdist_numba.py`     |  Numba-accelerated variant (lazy-loaded when `use_numba=True`). Has `clone(seed)` for API consistency.                                                                        |
+|  `cdf_estimators.py`  |  `build_cdf()` for empirical CDF construction                                                                                                                                 |
+|  `io.py`              |  `save_sabc_result()`, `load_sabc_result()` (pickle)                                                                                                                          |
+|  `helper.py`          |  Progress bar utilities                                                                                                                                                       |
+
+### Key Interfaces
+
+-   **Prior** — any object with `.rvs(rng, size=)` and `.logpdf(theta)` methods.
+-   **Simulator/stats_fn** — must fill output arrays in-place:
+  `simulator(theta, y, rng) -> None`, `stats_fn(y, ss) -> None`.
+-   **f_dist** — distance function built by `make_f_dist()` or hand-written.
+  Signature: `f_dist(theta, out=None) -> np.ndarray`.
+-   **clone** — `f_dist.clone(seed)` and `proposal.clone(rng)` create independent copies
+  with their own RNG streams and buffers. Required by `parallel_batches=True`.
+
+### Parallelism
+
+Two composable layers, both using `ThreadPoolExecutor`:
+
+1.  **`n_workers`** (on `FDist` / `make_f_dist`) — splits each simulator batch across
+   N threads. In NumPy mode, each worker gets its own RNG stream (via
+   `SeedSequence.spawn`) and scratch buffers. In Numba mode (`use_numba=True`),
+   controls `nb.set_num_threads()` for Numba's `prange` thread pool.
+2.  **`parallel_batches`** (on `SABCConfig`) — runs the two half-population updates
+   concurrently (emcee-style). Clones the proposal and f_dist into 2 independent
+   instances. Changes MCMC dynamics (both halves see stale snapshots).
+
+Both default to off (serial). Both compose: `n_workers=4` + `parallel_batches=True`
+= up to 8 threads per update.
+
+**Thread-safety:** `prior.logpdf()` must be stateless (called from worker threads
+when `parallel_batches=True`). `simulator` and `stats_fn` must only write to their
+provided output arrays (called from worker threads when `n_workers > 1`).
+
+**Oversubscription:** Total threads = `2 * n_workers` when both layers are active.
+Keep `n_workers` at or below physical core count; reduce when combining with
+`parallel_batches`. NumPy BLAS threads (`OMP_NUM_THREADS`) compound the issue.
+
+### Reproducibility
+
+Three independent RNG streams: simulator, algorithm, proposal.
+Each accepts its own `rng` or `seed` parameter.
+When `parallel_batches=True`, child RNG streams are spawned from the parent via
+`SeedSequence.spawn()`, ensuring independence.
