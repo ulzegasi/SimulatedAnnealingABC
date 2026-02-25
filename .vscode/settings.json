@@ -12,6 +12,11 @@
             100
         ]
     },
+    "[markdown]": {
+        "editor.defaultFormatter": "DavidAnson.vscode-markdownlint",
+        "editor.formatOnSave": true,
+        "files.trimTrailingWhitespace": false,
+    },
     "notebook.formatOnSave.enabled": true,
     "notebook.codeActionsOnSave": {
         "notebook.source.fixAll": "explicit",
@@ -23,4 +28,10 @@
     "[jsonc]": {
         "editor.formatOnSave": true,
     },
+    "yaml.schemas": {
+        "https://raw.githubusercontent.com/Microsoft/vscode-python/main/schemas/conda-environment.json": "environment*.yml",
+    },
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
 }

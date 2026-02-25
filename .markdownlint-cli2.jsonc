@@ -1,0 +1,53 @@
+{
+    // see https://github.com/DavidAnson/markdownlint-cli2#configuration
+    // and https://github.com/DavidAnson/markdownlint-cli2/blob/main/test/markdownlint-cli2-jsonc-example/.markdownlint-cli2.jsonc
+    // or https://github.com/DavidAnson/markdownlint-cli2/blob/main/test/markdownlint-cli2-yaml-example/.markdownlint-cli2.yaml
+    //
+    // https://github.com/DavidAnson/vscode-markdownlint/issues/180
+    // Additional paths to resolve module locations from
+    // "modulePaths": [
+    //     "/opt/conda/lib/node_modules/"
+    // ],
+    // https://www.npmjs.com/search?q=keywords%3Amarkdownlint-rule
+    // Include a custom rule package
+    // "customRules": [
+    //     "markdownlint-rule-max-one-sentence-per-line",
+    //     "sentences-per-line"
+    // ],
+    // https://www.npmjs.com/search?q=markdown-it
+    // "markdownItPlugins": [
+    //     [
+    //         "markdown-it-admon",
+    //         "markdown-it-admonition"
+    //     ]
+    // ],
+    // https://github.com/DavidAnson/markdownlint-cli2/issues/216
+    // https://github.com/DavidAnson/markdownlint-cli2/issues/301
+    // Disable progress on stdout (only valid at root)
+    "noProgress": true,
+    // Disable banner message on stdout (only valid at root)
+    "noBanner": true,
+    // Show found files on stdout (only valid at root)
+    "showFound": true,
+    // Fix any fixable errors
+    "fix": true,
+    // Use a specific formatter (only valid at root)
+    // https://github.com/DavidAnson/markdownlint-cli2/blob/main/doc/OutputFormatters.md
+    // https://www.npmjs.com/search?q=keywords%3Amarkdownlint-cli2-formatter
+    "outputFormatters": [
+        [
+            // https://www.npmjs.com/package/markdownlint-cli2-formatter-pretty
+            "markdownlint-cli2-formatter-pretty",
+            {
+                "appendLink": true
+            }
+        ]
+        // [
+        //     // https://www.npmjs.com/package/markdownlint-cli2-formatter-summarize
+        //     "markdownlint-cli2-formatter-summarize",
+        //     {
+        //         "byFileByRule": true
+        //     }
+        // ]
+    ]
+}

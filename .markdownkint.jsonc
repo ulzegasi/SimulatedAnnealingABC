@@ -1,0 +1,61 @@
+{
+    // https://github.com/DavidAnson/markdownlint#demonstration
+    // example at (with all properties set to their defaults):
+    //  https://github.com/DavidAnson/markdownlint/blob/main/schema/.markdownlint.yaml
+    //  https://github.com/DavidAnson/markdownlint/blob/main/schema/.markdownlint.jsonc
+    //
+    // Default state for all rules
+    "default": true,
+    // MD003/heading-style/header-style - Heading style
+    "MD003": {
+        "style": "atx"
+    },
+    // MD004/ul-style - Unordered list style
+    "MD004": {
+        "style": "sublist"
+    },
+    // MD007/ul-indent - Unordered list indentation
+    "MD007": {
+        "indent": 4
+    },
+    // MD010/no-hard-tabs - Hard tabs
+    "MD010": {
+        "code_blocks": true,
+        "spaces_per_tab": 4
+    },
+    // MD013/line-length - Line length
+    "MD013": false,
+    // MD024/no-duplicate-heading - Multiple headings with the same content
+    "MD024": false,
+    // MD025/single-title/single-h1 : Multiple top-level headings in the same document
+    "MD025": false,
+    // MD029/ol-prefix - Ordered list item prefix
+    "MD029": {
+        // List style
+        "style": "ordered"
+    },
+    // # MD030/list-marker-space - Spaces after list markers
+    "MD030": {
+        "ul_single": 3,
+        "ol_single": 2,
+        "ul_multi": 3,
+        "ol_multi": 2
+    },
+    // MD033/no-inline-html - Inline HTML
+    "MD033": {
+        "allowed_elements": [
+            "br",
+            "figure",
+            "figcaption"
+        ]
+    },
+    // MD041/first-line-heading/first-line-h1 : First line in a file should be a top-level heading
+    "MD041": false,
+    // MD046/code-block-style - Code block style
+    // conflicting with admonitions...
+    "MD046": false,
+    // MD048/code-fence-style - Code fence style
+    "MD048": {
+        "style": "backtick"
+    }
+}

@@ -243,22 +243,22 @@ result = sabc(config, n_simulation=1_000_000)
 
 #### SABCConfig fields
 
-| Field | Default | Description |
-|---|---|---|
-| `f_dist` | *(required)* | Distance function (from `make_f_dist` or hand-written) |
-| `prior` | *(required)* | Prior with `.rvs(rng, size=n_particles)` -> `(n_particles, n_para)` and `.logpdf(batch)` -> `(n_particles,)` |
-| `n_particles` | 1000 | Population size |
-| `v` | 1.0 | Annealing speed |
-| `delta` | 0.1 | Resampling parameter |
-| `algorithm` | `"single_eps"` | `"single_eps"` or `"multi_eps"` |
-| `resample` | `None` | Resampling interval (defaults to `2 * n_particles`) |
-| `proposal` | `None` | Proposal mechanism (defaults to `DifferentialEvolution`) |
-| `parallel_batches` | `False` | Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization). |
-| `rng` | `None` | Algorithm RNG (`np.random.Generator`) |
-| `seed` | `None` | Alternative to `rng` (creates one internally) |
-| `checkpoint_history` | 1 | Record histories every N updates |
-| `show_progressbar` | `None` | Show progress bar if available |
-| `show_checkpoint` | `None` | Log progress every N updates |
+| Field                | Default        | Description                                                                                                  |
+|----------------------|----------------|--------------------------------------------------------------------------------------------------------------|
+| `f_dist`             | *(required)*   | Distance function (from `make_f_dist` or hand-written)                                                       |
+| `prior`              | *(required)*   | Prior with `.rvs(rng, size=n_particles)` -> `(n_particles, n_para)` and `.logpdf(batch)` -> `(n_particles,)` |
+| `n_particles`        | 1000           | Population size                                                                                              |
+| `v`                  | 1.0            | Annealing speed                                                                                              |
+| `delta`              | 0.1            | Resampling parameter                                                                                         |
+| `algorithm`          | `"single_eps"` | `"single_eps"` or `"multi_eps"`                                                                              |
+| `resample`           | `None`         | Resampling interval (defaults to `2 * n_particles`)                                                          |
+| `proposal`           | `None`         | Proposal mechanism (defaults to `DifferentialEvolution`)                                                     |
+| `parallel_batches`   | `False`        | Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization).          |
+| `rng`                | `None`         | Algorithm RNG (`np.random.Generator`)                                                                        |
+| `seed`               | `None`         | Alternative to `rng` (creates one internally)                                                                |
+| `checkpoint_history` | 1              | Record histories every N updates                                                                             |
+| `show_progressbar`   | `None`         | Show progress bar if available                                                                               |
+| `show_checkpoint`    | `None`         | Log progress every N updates                                                                                 |
 
 ### 5. Use update_population to continue from previous result
 
@@ -460,11 +460,11 @@ up to 8 threads of useful work per update.
 
 ### When to use each layer
 
-| Layer | Best for | Overhead |
-|-------|----------|----------|
-| `n_workers` | Expensive simulators with large `n_samples` | Thread pool + per-worker buffers |
+| Layer              | Best for                                               | Overhead                                |
+|--------------------|--------------------------------------------------------|-----------------------------------------|
+| `n_workers`        | Expensive simulators with large `n_samples`            | Thread pool + per-worker buffers        |
 | `parallel_batches` | Large populations where each half-batch is substantial | Clone proposal + f_dist + 2-thread pool |
-| Both | Large populations with expensive simulators | Combined |
+| Both               | Large populations with expensive simulators            | Combined                                |
 
 For small toy problems, serial mode (the default) is typically fastest due
 to zero overhead.

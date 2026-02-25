@@ -42,6 +42,7 @@
                 "astral-sh.ty",
                 "charliermarsh.ruff",
                 "codezombiech.gitignore",
+                "darkriszty.markdown-table-prettify",
                 "davidanson.vscode-markdownlint",
                 "joshbolduc.commitlint",
                 "ms-python.python",
