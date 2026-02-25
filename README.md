@@ -65,7 +65,7 @@ conda activate sabc
 ```
 
 **Note**
-The code currently targets Python ≥ 3.14.
+The code currently targets Python ≥ 3.10.
 
 ---
 
@@ -129,8 +129,8 @@ from simulated_annealing_abc import (
 ```python
 true_mu = 10.0
 true_sigma = 15.0
-np.random.seed(1822)
-y_obs = np.random.normal(true_mu, true_sigma, size=1000)
+rng = np.random.default_rng(1822)
+y_obs = rng.normal(true_mu, true_sigma, size=1000)
 ```
 
 ### 1. Define a prior
@@ -541,15 +541,16 @@ This version:
 
 To enable the Numba path, provide **single-particle** Numba-compiled versions of the simulator and summary-statistics functions and pass `use_numba=True` to `make_f_dist`. The library automatically wraps them in a `numba.prange` batch kernel, so they are executed in parallel across particles:
 
+**Note:** Inside `@njit` functions, `np.random.*` uses Numba's own internal RNG state, which is independent of the global NumPy RNG and the three RNG streams documented in the Reproducibility section.
+
 ```python
 @nb.njit(cache=True)
 def simulator_nb(theta, y):
     """Single-particle: theta is 1-D (n_para,), y is 1-D (n_samples,). Fills y in-place."""
     mu = theta[0]
     sigma = theta[1]
-    tmp = np.random.normal(0.0, 1.0, y.size)
     for i in range(y.size):
-        y[i] = mu + sigma * tmp[i]
+        y[i] = mu + sigma * np.random.standard_normal()
 
 @nb.njit(cache=True)
 def stats_fn_nb(y, ss):

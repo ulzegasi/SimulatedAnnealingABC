@@ -7,11 +7,16 @@ name = "simulated_annealing_abc"
 version = "0.0.1"
 description = "Simulation-based inference using Simulated Annealing ABC"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy",
+    "numpy>=1.17",
     "scipy",
 ]
+
+[project.optional-dependencies]
+numba = ["numba"]
+viz = ["tqdm", "rich", "matplotlib"]
+test = ["pytest", "pytest-cov"]
 
 [tool.ty.src]
 include = ["src"]

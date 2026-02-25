@@ -129,9 +129,9 @@ def simulator_nb(theta, y):
     """Single-particle: theta is 1-D (n_para,), y is 1-D (n_samples,). Fills y in-place."""
     mu = theta[0]
     sigma = theta[1]
-    tmp = np.random.normal(0.0, 1.0, y.size)
+    # Numba's internal RNG (independent of global NumPy RNG)
     for i in range(y.size):
-        y[i] = mu + sigma * tmp[i]
+        y[i] = mu + sigma * np.random.standard_normal()
 
 
 @nb.njit(cache=True)
@@ -154,8 +154,8 @@ if __name__ == "__main__":
 
     true_mu = 10.0
     true_sigma = 15.0
-    np.random.seed(1822)
-    y_obs = np.random.normal(true_mu, true_sigma, size=1000)
+    rng = np.random.default_rng(1822)
+    y_obs = rng.normal(true_mu, true_sigma, size=1000)
 
     prior = Prior(mu_min=-10.0, mu_max=20.0, sigma_min=0.0, sigma_max=25.0)
 
