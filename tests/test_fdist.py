@@ -246,3 +246,54 @@ class TestMakeFDist:
         assert fdist.n_samples == n_samples
         assert fdist.distance == "abs"
         assert fdist.n_workers == 1
+
+    def test_make_f_dist_with_simulator_stats_fn(self):
+        """Test make_f_dist with real simulator and stats_fn."""
+        n_samples = 50
+        n_para = 2
+        ss_obs = np.array([0.0, 1.0, 2.0])
+
+        def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
+            y[:] = rng.normal(0, 1, size=y.shape)
+
+        def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
+            ss_out[:, 0] = np.mean(y, axis=1)
+            ss_out[:, 1] = np.std(y, axis=1)
+            ss_out[:, 2] = np.median(y, axis=1)
+
+        fdist = make_f_dist(
+            n_samples=n_samples,
+            ss_obs=ss_obs,
+            simulator=simulator,
+            stats_fn=stats_fn,
+            seed=42,
+        )
+
+        # Test that it works
+        theta = np.array([[0.0, 1.0]])
+        result = fdist(theta)
+        assert result.shape == (1, 3)
+
+    def test_make_f_dist_picklable(self, mock_simulator, mock_stats_fn):
+        """Test that the returned f_dist is picklable."""
+        import pickle
+
+        n_samples = 100
+        ss_obs = np.array([0.0, 1.0])
+
+        fdist = make_f_dist(
+            n_samples=n_samples,
+            ss_obs=ss_obs,
+            simulator=mock_simulator,
+            stats_fn=mock_stats_fn,
+            seed=42,
+        )
+
+        # Should be able to pickle and unpickle
+        pickled = pickle.dumps(fdist)
+        fdist_unpickled = pickle.loads(pickled)
+
+        # Verify it works after unpickling
+        theta = np.array([[0.0, 1.0]])
+        result = fdist_unpickled(theta)
+        assert result.shape == (1, 2)

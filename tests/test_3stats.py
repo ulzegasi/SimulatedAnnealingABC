@@ -4,7 +4,7 @@ This test uses empirical mean, median, and standard deviation as summary statist
 The median is a redundant statistic for a Gaussian model.
 
 Run with visualization:
-    VISUALIZE=1 pytest -m slow examples/test_3stats.py
+    VISUALIZE=1 pytest -m slow tests/test_3stats.py
 """
 
 import os

@@ -4,7 +4,7 @@ This test verifies convergence, compares single- and multi-epsilon schemes,
 and validates posterior recovery for a simple Gaussian toy model.
 
 Run with visualization:
-    VISUALIZE=1 pytest -m slow examples/test_2stats.py
+    VISUALIZE=1 pytest -m slow tests/test_2stats.py
 """
 
 import os

@@ -88,4 +88,4 @@ clean-cache:
 # =============================================================================
 .PHONY: notebooks
 notebooks:
-	jupytext --to ipynb examples/test_*.py
+	jupytext --to ipynb examples/notebooks/*.py

@@ -4,7 +4,7 @@ This test uses empirical mean, standard deviation, and a random uninformative st
 to test robustness to noisy summary statistics.
 
 Run with visualization:
-    VISUALIZE=1 pytest -m slow examples/test_3stats_noise.py
+    VISUALIZE=1 pytest -m slow tests/test_3stats_noise.py
 """
 
 import os
@@ -16,7 +16,6 @@ import pytest
 from simulated_annealing_abc import (
     DifferentialEvolution,
     SABCConfig,
-    make_f_dist,
     sabc,
     save_sabc_result,
 )
@@ -98,27 +97,59 @@ def stats_fn_with_noise(y: np.ndarray, ss_out: np.ndarray, rng: np.random.Genera
     ss_out[:, 2] = rng.uniform(0, 1, size=y.shape[0])
 
 
-def make_noise_stats_fn(rng_seed: int):
-    """Create a stats_fn with its own RNG for noise."""
-    rng = np.random.default_rng(rng_seed)
+# Global RNG for f_dist - simulates having a stateful stats_fn
+_f_dist_rng = np.random.default_rng(12345)
 
-    def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
-        stats_fn_with_noise(y, ss_out, rng)
 
-    return stats_fn
+def f_dist(theta: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+    """Manual f_dist with noisy summary statistics.
+
+    This defines f_dist manually rather than using make_f_dist,
+    to avoid pickling issues with stateful stats_fn.
+    """
+    theta = np.atleast_2d(theta)
+    n_batch = theta.shape[0]
+
+    # Generate summary statistics for each parameter
+    mu = theta[:, 0:1]
+    sigma = theta[:, 1:2]
+
+    # Simulate data and compute stats
+    ss = np.empty((n_batch, 3), dtype=np.float64)
+    for i in range(n_batch):
+        y_i = np.random.normal(mu[i, 0], sigma[i, 0], size=N_SAMPLES)
+        ss[i, 0] = np.mean(y_i)
+        ss[i, 1] = np.std(y_i, ddof=0)
+        ss[i, 2] = _f_dist_rng.uniform(0, 1)
+
+    rho = np.abs(ss - SS_OBS)
+    if out is not None:
+        out[:] = rho
+        return out
+    return rho
+
+
+# Module-level variable for observed stats (set in fixture)
+SS_OBS = None
 
 
 @pytest.fixture(scope="module")
 def observed_data():
     """Generate observed data once for all tests."""
+    global SS_OBS
     rng = np.random.default_rng(1822)
     y_obs = rng.normal(TRUE_MU, TRUE_SIGMA, size=N_SAMPLES)
 
-    stats_fn = make_noise_stats_fn(999)
-    n_stats = 3
-    ss_obs = np.empty((1, n_stats), dtype=np.float64)
-    stats_fn(y_obs.reshape(1, -1), ss_obs)
-    ss_obs = ss_obs.ravel()
+    # Generate observed summary stats
+    rng_obs = np.random.default_rng(999)
+    ss_obs = np.array(
+        [
+            np.mean(y_obs),
+            np.std(y_obs, ddof=0),
+            rng_obs.uniform(0, 1),
+        ]
+    )
+    SS_OBS = ss_obs
 
     return y_obs, ss_obs
 
@@ -186,16 +217,6 @@ def _plot_posterior(result, label, true_mu=TRUE_MU, true_sigma=TRUE_SIGMA):
 def test_3stats_with_noise(observed_data, prior):
     """Test SABC with 3 stats where one is uninformative noise."""
     y_obs, ss_obs = observed_data
-
-    stats_fn = make_noise_stats_fn(12345)
-
-    f_dist = make_f_dist(
-        n_samples=N_SAMPLES,
-        ss_obs=ss_obs,
-        simulator=simulator,
-        stats_fn=stats_fn,
-        seed=123,
-    )
 
     config = SABCConfig(
         f_dist=f_dist,
