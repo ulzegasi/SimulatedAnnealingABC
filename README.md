@@ -4,14 +4,14 @@ Approximate Bayesian Computation (ABC) is a family of simulation-based inference
 
 The package includes:
 
-- proposal mechanisms (built-in),
-- the SABC algorithm itself,
+-   proposal mechanisms (built-in),
+-   the SABC algorithm itself,
 
 and requires (user-defined):
 
-- summary statistics
-- a metric (distance),
-- and a stochastic simulator.
+-   summary statistics
+-   a metric (distance),
+-   and a stochastic simulator.
 
 All user-facing functions (simulator, summary statistics, prior, distance) use a **batch API** operating on 2-D arrays, enabling vectorized NumPy computation across entire particle populations.
 
@@ -21,30 +21,30 @@ The SABC algorithm supports both **single-ε** and **multi-ε** annealing scheme
 
 ## Features
 
-- **Batch-vectorized inner loop**
-  - All particle updates are processed in batch via NumPy (no Python per-particle loop)
-  - Allocation-free distance evaluation with lazy 2-D buffers
-  - In-place array operations throughout
-- **Thread-based parallelism**
-  - Multi-threaded simulator execution via `n_workers` in `make_f_dist`
-  - Concurrent half-batch population updates via `parallel_batches` in `SABCConfig`
-  - Both layers are composable and opt-in (serial by default)
-- **Optional Numba acceleration**
-  - User-supplied single-particle `@njit` functions are automatically wrapped in a `prange` batch kernel
-- **Reproducibility by design**
-  - Independent RNG control for:
-    - simulator / distance function
-    - SABC algorithm (accept-reject, resampling)
-    - proposal mechanisms
-- **Modular architecture**
-  - Plug in any simulator and summary statistics
-  - Custom distance metrics (absolute, squared, weighted, ...)
-- **Multiple proposal mechanisms**
-  - Differential Evolution
-  - Random Walk
-  - Stretch Move
-- **Restartable runs**
-  - Population updates can be continued from previous results
+-   **Batch-vectorized inner loop**
+    +   All particle updates are processed in batch via NumPy (no Python per-particle loop)
+    +   Allocation-free distance evaluation with lazy 2-D buffers
+    +   In-place array operations throughout
+-   **Thread-based parallelism**
+    +   Multi-threaded simulator execution via `n_workers` in `make_f_dist`
+    +   Concurrent half-batch population updates via `parallel_batches` in `SABCConfig`
+    +   Both layers are composable and opt-in (serial by default)
+-   **Optional Numba acceleration**
+    +   User-supplied single-particle `@njit` functions are automatically wrapped in a `prange` batch kernel
+-   **Reproducibility by design**
+    +   Independent RNG control for:
+        -   simulator / distance function
+        -   SABC algorithm (accept-reject, resampling)
+        -   proposal mechanisms
+-   **Modular architecture**
+    +   Plug in any simulator and summary statistics
+    +   Custom distance metrics (absolute, squared, weighted, ...)
+-   **Multiple proposal mechanisms**
+    +   Differential Evolution
+    +   Random Walk
+    +   Stretch Move
+-   **Restartable runs**
+    +   Population updates can be continued from previous results
 
 ---
 
@@ -71,34 +71,7 @@ The code currently targets Python ≥ 3.10.
 
 ## Development & Testing
 
-Setting up the devcontainer will install `environment.sabc-dev.yml`.
-So this environment should be used.
-
 For development setup, linting, testing with coverage, and other dev tools, see [AGENTS.md](AGENTS.md).
-
-### Running Tests
-
-```bash
-# Fast unit tests (seconds)
-pytest
-
-# Integration tests (minutes)
-pytest -m slow
-
-# Integration tests with visualization
-VISUALIZE=1 pytest -m slow
-```
-
-### Jupyter Notebooks
-
-Example notebooks are maintained as `.py` files in `examples/` using jupytext's `percent` format.
-To generate `.ipynb` notebooks:
-
-```bash
-jupytext --to ipynb examples/test_*.py
-```
-
-The `.py` files are the source of truth—edit those directly.
 
 ---
 
@@ -137,8 +110,8 @@ y_obs = rng.normal(true_mu, true_sigma, size=1000)
 
 The prior must provide **batch** methods:
 
-- `rvs(rng, size=n_particles)` — draw `n_particles` samples, returning shape `(n_particles, n_para)`
-- `logpdf(theta_batch)` — evaluate the log-density for a `(n_particles, n_para)` batch, returning `(n_particles,)`
+-   `rvs(rng, size=n_particles)` — draw `n_particles` samples, returning shape `(n_particles, n_para)`
+-   `logpdf(theta_batch)` — evaluate the log-density for a `(n_particles, n_para)` batch, returning `(n_particles,)`
 
 ```python
 class Prior:
@@ -174,8 +147,8 @@ prior = Prior(mu_min=-10.0, mu_max=20.0, sigma_min=0.0, sigma_max=25.0)
 
 Both functions operate on **2-D batches** and fill output arrays **in-place**:
 
-- `simulator(theta, y, rng)` — `theta` is `(n_batch_particles, n_para)`, `y` is `(n_batch_particles, n_samples)`
-- `stats_fn(y, ss_out)` — `y` is `(n_batch_particles, n_samples)`, `ss_out` is `(n_batch_particles, n_stats)`
+-   `simulator(theta, y, rng)` — `theta` is `(n_batch_particles, n_para)`, `y` is `(n_batch_particles, n_samples)`
+-   `stats_fn(y, ss_out)` — `y` is `(n_batch_particles, n_samples)`, `ss_out` is `(n_batch_particles, n_stats)`
 
 ```python
 def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
@@ -245,22 +218,22 @@ result = sabc(config, n_simulation=1_000_000)
 
 #### SABCConfig fields
 
-| Field                | Default        | Description                                                                                                  |
-|----------------------|----------------|--------------------------------------------------------------------------------------------------------------|
-| `f_dist`             | *(required)*   | Distance function (from `make_f_dist` or hand-written)                                                       |
-| `prior`              | *(required)*   | Prior with `.rvs(rng, size=n_particles)` -> `(n_particles, n_para)` and `.logpdf(batch)` -> `(n_particles,)` |
-| `n_particles`        | 1000           | Population size                                                                                              |
-| `v`                  | 1.0            | Annealing speed                                                                                              |
-| `delta`              | 0.1            | Resampling parameter                                                                                         |
-| `algorithm`          | `"single_eps"` | `"single_eps"` or `"multi_eps"`                                                                              |
-| `resample`           | `None`         | Resampling interval (defaults to `2 * n_particles`)                                                          |
-| `proposal`           | `None`         | Proposal mechanism (defaults to `DifferentialEvolution`)                                                     |
-| `parallel_batches`   | `False`        | Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization).          |
-| `rng`                | `None`         | Algorithm RNG (`np.random.Generator`)                                                                        |
-| `seed`               | `None`         | Alternative to `rng` (creates one internally)                                                                |
-| `checkpoint_history` | 1              | Record histories every N updates                                                                             |
-| `show_progressbar`   | `None`         | Show progress bar if available                                                                               |
-| `show_checkpoint`    | `None`         | Log progress every N updates                                                                                 |
+|  Field                 |  Default         |  Description                                                                                                   |
+| ---------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------- |
+|  `f_dist`              |  *(required)*    |  Distance function (from `make_f_dist` or hand-written)                                                        |
+|  `prior`               |  *(required)*    |  Prior with `.rvs(rng, size=n_particles)` -> `(n_particles, n_para)` and `.logpdf(batch)` -> `(n_particles,)`  |
+|  `n_particles`         |  1000            |  Population size                                                                                               |
+|  `v`                   |  1.0             |  Annealing speed                                                                                               |
+|  `delta`               |  0.1             |  Resampling parameter                                                                                          |
+|  `algorithm`           |  `"single_eps"`  |  `"single_eps"` or `"multi_eps"`                                                                               |
+|  `resample`            |  `None`          |  Resampling interval (defaults to `2 * n_particles`)                                                           |
+|  `proposal`            |  `None`          |  Proposal mechanism (defaults to `DifferentialEvolution`)                                                      |
+|  `parallel_batches`    |  `False`         |  Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization).           |
+|  `rng`                 |  `None`          |  Algorithm RNG (`np.random.Generator`)                                                                         |
+|  `seed`                |  `None`          |  Alternative to `rng` (creates one internally)                                                                 |
+|  `checkpoint_history`  |  1               |  Record histories every N updates                                                                              |
+|  `show_progressbar`    |  `None`          |  Show progress bar if available                                                                                |
+|  `show_checkpoint`     |  `None`          |  Log progress every N updates                                                                                  |
 
 ### 5. Use update_population to continue from previous result
 
@@ -350,17 +323,20 @@ loaded_result = load_sabc_result([...some path...] / "result_2.pkl")
 
 The algorithm has **three independent sources of randomness**:
 
-1. **Simulator / distance function**
-   - Randomness from the stochastic forward model used inside `f_dist`
-   - Controlled via the `seed` argument in `make_f_dist`
+1.  **Simulator / distance function**
 
-2. **SABC algorithm**
-   - Accept/reject decisions and population resampling
-   - Controlled via `rng` or `seed` in `SABCConfig`
+    +   Randomness from the stochastic forward model used inside `f_dist`
+    +   Controlled via the `seed` argument in `make_f_dist`
 
-3. **Proposal mechanism**
-   - Randomness used to generate parameter proposals
-   - Each proposal object accepts its own `rng`
+2.  **SABC algorithm**
+
+    +   Accept/reject decisions and population resampling
+    +   Controlled via `rng` or `seed` in `SABCConfig`
+
+3.  **Proposal mechanism**
+
+    +   Randomness used to generate parameter proposals
+    +   Each proposal object accepts its own `rng`
 
 For **fully reproducible runs**, all three sources must be fixed explicitly.
 
@@ -418,10 +394,10 @@ config = SABCConfig(
 
 When enabled, the library internally:
 
-- Clones the proposal into 2 instances with independent RNG streams
-- Clones `f_dist` into 2 instances with independent seeds and buffers
-- Allocates 2 sets of scratch buffers for accept/reject
-- Submits both half-batch updates to a `ThreadPoolExecutor(max_workers=2)`
+-   Clones the proposal into 2 instances with independent RNG streams
+-   Clones `f_dist` into 2 instances with independent seeds and buffers
+-   Allocates 2 sets of scratch buffers for accept/reject
+-   Submits both half-batch updates to a `ThreadPoolExecutor(max_workers=2)`
 
 This changes MCMC dynamics (both halves see stale snapshots instead of
 the serial dependency), which is why it is opt-in. Statistically, this is
@@ -462,11 +438,11 @@ up to 8 threads of useful work per update.
 
 ### When to use each layer
 
-| Layer              | Best for                                               | Overhead                                |
-|--------------------|--------------------------------------------------------|-----------------------------------------|
-| `n_workers`        | Expensive simulators with large `n_samples`            | Thread pool + per-worker buffers        |
-| `parallel_batches` | Large populations where each half-batch is substantial | Clone proposal + f_dist + 2-thread pool |
-| Both               | Large populations with expensive simulators            | Combined                                |
+|  Layer               |  Best for                                                |  Overhead                                 |
+| -------------------- | -------------------------------------------------------- | ----------------------------------------- |
+|  `n_workers`         |  Expensive simulators with large `n_samples`             |  Thread pool + per-worker buffers         |
+|  `parallel_batches`  |  Large populations where each half-batch is substantial  |  Clone proposal + f_dist + 2-thread pool  |
+|  Both                |  Large populations with expensive simulators             |  Combined                                 |
 
 For small toy problems, serial mode (the default) is typically fastest due
 to zero overhead.
@@ -477,12 +453,12 @@ to zero overhead.
 processes. Any user-supplied function that runs concurrently must be
 thread-safe:
 
-- **`prior.logpdf()`** is called from `_update_batch`, which runs in worker
+-   **`prior.logpdf()`** is called from `_update_batch`, which runs in worker
   threads when `parallel_batches=True`. The function must be stateless (no
   mutation of shared data). Most priors (scipy distributions, pure-NumPy
   implementations) satisfy this. A prior that mutates internal state (e.g.
   caching intermediate results) will cause data races.
-- **`simulator`** and **`stats_fn`** are called from worker threads when
+-   **`simulator`** and **`stats_fn`** are called from worker threads when
   `n_workers` > 1. Each worker receives its own pre-allocated buffers and
   its own RNG, so standard implementations that only write to the provided
   output arrays are safe. A simulator that writes to global or shared state
@@ -496,10 +472,10 @@ rather than help. Additionally, NumPy itself may use multi-threaded BLAS
 (controlled by `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, etc.), which compounds
 the problem. As a rule of thumb:
 
-- Set `n_workers` to at most the number of physical cores.
-- If using `parallel_batches=True` alongside `n_workers`, reduce `n_workers`
+-   Set `n_workers` to at most the number of physical cores.
+-   If using `parallel_batches=True` alongside `n_workers`, reduce `n_workers`
   to leave room for the second half-batch thread (e.g. `n_workers = cores // 2`).
-- If the simulator is already parallelized internally (e.g. via BLAS or
+-   If the simulator is already parallelized internally (e.g. via BLAS or
   Numba `prange`), set `n_workers=1` and consider `parallel_batches` only.
 
 ---
@@ -533,9 +509,9 @@ f_dist = make_f_dist(
 
 This version:
 
-- Uses vectorized NumPy throughout
-- Is fully reproducible
-- Requires no optional dependencies
+-   Uses vectorized NumPy throughout
+-   Is fully reproducible
+-   Requires no optional dependencies
 
 ### Numba-accelerated mode (advanced)
 
@@ -578,10 +554,10 @@ f_dist_fast = make_f_dist(
 
 **Requirements for Numba mode:**
 
-- `simulator(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.
-- `stats_fn(y, ss)` — single-particle: `y` is 1-D `(n_samples,)`, `ss` is 1-D `(n_stats,)`. Fills `ss` in-place.
-- Both functions must be compiled with `@numba.njit`
-- The library internally wraps them in a `numba.prange` loop, so the user writes only the per-particle logic
-- Avoid per-call allocations inside the Numba functions for best performance
+-   `simulator(theta, y)` — single-particle: `theta` is 1-D `(n_para,)`, `y` is 1-D `(n_samples,)`. Fills `y` in-place.
+-   `stats_fn(y, ss)` — single-particle: `y` is 1-D `(n_samples,)`, `ss` is 1-D `(n_stats,)`. Fills `ss` in-place.
+-   Both functions must be compiled with `@numba.njit`
+-   The library internally wraps them in a `numba.prange` loop, so the user writes only the per-particle logic
+-   Avoid per-call allocations inside the Numba functions for best performance
 
 If Numba is not installed, attempting to pass `use_numba=True` raises an informative error.

@@ -57,5 +57,10 @@
     // MD048/code-fence-style - Code fence style
     "MD048": {
         "style": "backtick"
+    },
+    // MD060/table-column-style - Table column style
+    "MD060": {
+        "style": "aligned",
+        "aligned_delimiter": true
     }
 }
