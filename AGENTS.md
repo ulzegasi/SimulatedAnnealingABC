@@ -183,6 +183,24 @@ The `.py` files in `examples/notebooks/` are paired with Jupyter notebooks via j
 make notebooks   # Regenerate .ipynb files from .py sources
 ```
 
+In addition, there is `examples/parallel-demo.py` which can be used to demonstrate the different parallelization options
+
+```sh
+python parallel-demo.py # without options runs sequentially
+python parallel-demo.py --fdist-worker 8
+python parallel-demo.py --fdist-worker 4 --parallel-batch
+python parallel-demo.py --fdist-worker 8 --use-numba
+python parallel-demo.py --fdist-worker 4 --parallel-batch --use-numba
+```
+
+For more info see
+
+```sh
+python parallel-demo.py --help
+```
+
+and the section on [Parallelism](#parallelism) below.
+
 ## Architecture
 
 ### Package Layout (`src/simulated_annealing_abc/`)
