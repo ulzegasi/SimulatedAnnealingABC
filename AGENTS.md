@@ -174,7 +174,7 @@ def resample_population(
 `@dataclass` for result containers and config; `@dataclass(init=False)` for proposals
 with custom `__init__`.
 
-### Jupyter Notebooks
+### Examples
 
 The `.py` files in `examples/notebooks/` are paired with Jupyter notebooks via jupytext's `percent` format.
 **The `.py` files are the source of truth** — never manually edit `.ipynb` files.
