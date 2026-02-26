@@ -404,6 +404,29 @@ the serial dependency), which is why it is opt-in. Statistically, this is
 the same relaxation used by the emcee ensemble sampler and is valid for
 the SABC algorithm.
 
+### Thread-safety requirements
+
+Both parallelization layers use threads (not processes). Your functions must be
+thread-safe:
+
+|  Component           |  `n_workers` (in `make_f_dist`)                                                             |  `parallel_batches` (in `SABCConfig`)                   |
+| -------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+|  **simulator**       |  Must release the GIL (use NumPy ops like `rng.normal`). Each worker gets its own buffers.  |  Must only write to provided output arrays              |
+|  **stats_fn**        |  Must only write to provided output arrays                                                  |  Must only write to provided output arrays              |
+|  **prior.logpdf()**  |  Not called in parallel                                                                     |  Must be **stateless** (no mutation of internal state)  |
+
+**What "releases the GIL" means:**
+
+-   Use vectorized NumPy operations (`rng.normal`, `np.dot`, array arithmetic)
+-   Avoid Python loops over particles
+-   Avoid calling Python code that holds the GIL
+
+**Numba mode (`use_numba=True`):**
+
+-   `simulator` and `stats_fn` must be `@numba.njit` compiled single-particle functions
+-   No GIL issues since Numba releases it
+-   Signature: `simulator(theta, y)` and `stats_fn(y, ss)` (1-D arrays, no rng argument)
+
 ### Combining both layers
 
 Both layers compose naturally. Use `n_workers` for intra-batch parallelism
@@ -449,20 +472,8 @@ to zero overhead.
 
 ### Caveats
 
-**Thread-safety requirements.** Both parallelization layers use threads, not
-processes. Any user-supplied function that runs concurrently must be
-thread-safe:
-
--   **`prior.logpdf()`** is called from `_update_batch`, which runs in worker
-  threads when `parallel_batches=True`. The function must be stateless (no
-  mutation of shared data). Most priors (scipy distributions, pure-NumPy
-  implementations) satisfy this. A prior that mutates internal state (e.g.
-  caching intermediate results) will cause data races.
--   **`simulator`** and **`stats_fn`** are called from worker threads when
-  `n_workers` > 1. Each worker receives its own pre-allocated buffers and
-  its own RNG, so standard implementations that only write to the provided
-  output arrays are safe. A simulator that writes to global or shared state
-  will cause data races.
+**Thread-safety.** See [Thread-safety requirements](#thread-safety-requirements)
+above for what your functions must satisfy.
 
 **Core oversubscription.** Both layers create `ThreadPoolExecutor` pools.
 When combined (`n_workers=W` + `parallel_batches=True`), the total thread
