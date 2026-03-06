@@ -11,6 +11,7 @@ and requires (user-defined):
 
 -   summary statistics
 -   a metric (distance),
+-   parameter priors,
 -   and a stochastic simulator.
 
 All user-facing functions (simulator, summary statistics, prior, distance) use a **batch API** operating on 2-D arrays, enabling vectorized NumPy computation across entire particle populations.
@@ -102,7 +103,7 @@ from simulated_annealing_abc import (
 ```python
 true_mu = 10.0
 true_sigma = 15.0
-rng = np.random.default_rng(1822)
+rng = np.random.default_rng(2218)
 y_obs = rng.normal(true_mu, true_sigma, size=1000)
 ```
 
@@ -161,7 +162,7 @@ def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
     ss_out[:, 1] = np.std(y, axis=1, ddof=0)
 ```
 
-Compute observed summary statistics (`ss_obs`). Since `stats_fn` expects a
+Compute summary statistics (`ss_obs`) for the observed data (`y_obs`). Since `stats_fn` expects a
 2-D batch, reshape the 1-D observed data to `(1, n_samples)`:
 
 ```python

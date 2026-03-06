@@ -37,14 +37,15 @@ import numpy as np
 from scipy.stats import gaussian_kde, norm
 
 from simulated_annealing_abc import (
+    SABCConfig,
+    sabc,
+    make_f_dist,
+    update_population,
     DifferentialEvolution,
     RandomWalk,
-    SABCConfig,
     StretchMove,
-    make_f_dist,
-    sabc,
     save_sabc_result,
-    update_population,
+    load_sabc_result
 )
 
 # %%
@@ -58,19 +59,13 @@ HERE = Path.cwd()
 
 # %%
 # -------------------------
-# Reproducibility
-# -------------------------
-np.random.seed(1822)
-
-# %%
-# -------------------------
 # True data-generating process
 # -------------------------
 true_mu = 10.0
 true_sigma = 15.0
 n_samples = 1000
-
-y_obs = np.random.normal(true_mu, true_sigma, size=n_samples)
+rng = np.random.default_rng(2218)
+y_obs = rng.normal(true_mu, true_sigma, size=n_samples)
 
 # %%
 # Plot the observed data and true distribution
@@ -263,10 +258,13 @@ prior = Prior(mu_min=-10.0, mu_max=20.0, sigma_min=0.0, sigma_max=25.0)
 # -------------------------
 # Model (simulator) + summary stats (empirical mu and sigma)
 # -------------------------
-# NOTE: Simulator and summary statistics functions fill in-place arrays
-# y: observed/simulated data
-# theta: model parameters
-# ss_out: summary statistics output array
+# NOTE: Simulator and summary statistics functions
+#  - operate on 2-D batches and
+#  - fill output arrays in-place.
+# -------------------------
+# y: observed/simulated data              -> (n_batch_particles, n_samples)
+# theta: model parameters                 -> (n_batch_particles, n_para)
+# ss_out: summary statistics output array -> (n_batch_particles, n_stats)
 
 
 def simulator(theta: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> None:
@@ -291,77 +289,29 @@ def stats_fn(y: np.ndarray, ss_out: np.ndarray) -> None:
 
 
 # %%
-# -------------------------
-# NUMBA simulator + stats
-# -------------------------
-@nb.njit(cache=True)
-def simulator_nb(theta, y):
-    """Single-particle: theta is 1-D (n_para,), y is 1-D (n_samples,). Fills y in-place."""
-    mu = theta[0]
-    sigma = theta[1]
-    # Numba's internal RNG (independent of global NumPy RNG)
-    for i in range(y.size):
-        y[i] = mu + sigma * np.random.standard_normal()
-
-
-@nb.njit(cache=True)
-def stats_fn_nb(y, ss):
-    """Single-particle: y is 1-D (n_samples,), ss is 1-D (n_stats,). Fills ss in-place."""
-    s = 0.0
-    for i in range(y.size):
-        s += y[i]
-    m = s / y.size
-    v = 0.0
-    for i in range(y.size):
-        d = y[i] - m
-        v += d * d
-    ss[0] = m
-    ss[1] = np.sqrt(v / y.size)
-
-
-# %%
 # n_stats
 n_stats = 2  # manually set
 
+# %%
 # compute summary statistics (ss_obs) for the observed data (y_obs)
 ss_obs = np.empty((1, n_stats), dtype=np.float64)
 stats_fn(y_obs.reshape(1, -1), ss_obs)
-ss_obs = ss_obs.ravel()
+ss_obs = ss_obs.ravel() # -> (n_stats,)
 print("Observed summary statistics:", ss_obs)
-
-# do the same using numba stats function
-ss_obs_nb = np.empty((1, n_stats), dtype=np.float64)
-stats_fn_nb(y_obs, ss_obs_nb)
-ss_obs = ss_obs.ravel()
-print("Observed summary statistics (numba):", ss_obs_nb)
 
 # %%
 # -------------------------
 # build allocation-free f_dist(theta, out=None)
 # -------------------------
 f_dist = make_f_dist(
-    n_samples=n_samples,
+    n_samples=1000,
     ss_obs=ss_obs,
     simulator=simulator,
     stats_fn=stats_fn,
-    seed=123,  # optional, for reproducibility of the simulator RNG inside f_dist
+    seed=123,          # simulator-level randomness (optional), for reproducibility of the simulator RNG inside f_dist
+    distance="abs",    # distance per statistic: abs(ss_sim-ss_obs)
+    n_workers=4,       # number of threads for simulator (default: 1)
 )
-
-# %%
-# -------------------------
-# Build numba f_dist
-# -------------------------
-f_dist_fast = make_f_dist(
-    n_samples=n_samples,
-    ss_obs=ss_obs,
-    simulator=simulator_nb,
-    stats_fn=stats_fn_nb,
-    use_numba=True,
-)
-
-tmp = np.empty((1, 2), dtype=np.float64)
-theta0 = prior.rvs(np.random.default_rng(0))  # any theta
-f_dist_fast(theta0, out=tmp)  # triggers compilation
 
 # %%
 # -------------------------
@@ -376,8 +326,12 @@ v = 1.0
 # ---
 
 # %%
+# All algorithm settings are collected in a single `SABCConfig` dataclass.
+# The simulation budget (`n_simulation`) is the only argument passed separately,
+# since it typically changes between the initial run and subsequent updates.
+
 # To ensure reproducibility
-rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
 proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
@@ -390,32 +344,14 @@ config = SABCConfig(
     prior=prior,
     n_particles=n_particles,
     v=v,
-    algorithm="single_eps",
+    algorithm="single_eps", # or "multi_eps"
     proposal=proposal,
     rng=rng_alg,
     show_checkpoint=200,
+    show_progressbar=True,
+    parallel_batches=False,
 )
 out_dif = sabc(config, n_simulation=n_simulation)
-
-# %%
-# Testing numba version
-
-# rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
-# rng_prop = np.random.default_rng(22)  # proposal randomness
-
-# proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
-
-# out_dif_nb = sabc(
-#     f_dist_fast,
-#     prior,
-#     n_particles=n_particles,
-#     n_simulation=n_simulation,
-#     v=v,
-#     show_checkpoint=200,
-#     algorithm="single_eps",
-#     proposal=proposal,
-#     rng=rng_alg,
-# )
 
 # %%
 # -------------------------
@@ -424,8 +360,10 @@ out_dif = sabc(config, n_simulation=n_simulation)
 out_dif_2 = update_population(out_dif, n_simulation=n_simulation)
 
 # %%
-# Population (n_particles × n_params)
-pop_dif = np.column_stack(out_dif_2.population)
+# Population - stored as (n_particles, n_para), transpose for per-parameter slicing
+pop_dif = np.column_stack(out_dif_2.population) # or out_dif_2.population.T
+mu = pop_dif[0, :]
+sigma = pop_dif[1, :]
 
 # Epsilon history
 eps_dif = np.column_stack(out_dif_2.state.epsilon_history)
@@ -440,11 +378,44 @@ u_dif = np.column_stack(out_dif_2.state.u_history)
 eps_dif.shape, rho_dif.shape, u_dif.shape
 
 # %%
-# -------------------------
-# Posterior sample
-# -------------------------
-mu = pop_dif[0, :]
-sigma = pop_dif[1, :]
+values = np.vstack([mu, sigma])
+kde = gaussian_kde(values)
+# --- Grid (manual zoom region) ---
+mu_lims = (7, 11)
+sigma_lims = (13, 17)
+mu_grid = np.linspace(mu_lims[0], mu_lims[1], 250)
+sig_grid = np.linspace(sigma_lims[0], sigma_lims[1], 250)
+MU, SIG = np.meshgrid(mu_grid, sig_grid)
+# --- Evaluate density ---
+positions = np.vstack([MU.ravel(), SIG.ravel()])
+Z = kde(positions).reshape(MU.shape)
+# --- Plot ---
+plt.figure(figsize=(6, 5))
+plt.grid(True, alpha=0.3, zorder=0)
+# --- Shaded contours (grayscale) ---
+n_levels = 10
+cf = plt.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
+# --- Contour lines ---
+plt.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
+# --- True parameters ---
+plt.scatter(
+    true_mu,
+    true_sigma,
+    c="red",
+    s=90,
+    linewidths=3.0,
+    marker="x",
+    zorder=3,
+    label="True value"
+)
+
+plt.xlim(mu_lims)
+plt.ylim(sigma_lims)
+plt.xlabel(r"$\mu$")
+plt.ylabel(r"$\sigma$")
+plt.colorbar(cf, label="Posterior density")
+plt.legend()
+plt.show()
 
 # %%
 
@@ -596,6 +567,72 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_2stats.pkl")
 # -------------------------
 # out_dif_2 = load_sabc_result(HERE / "test_results" / "out_DE_sing_2stats.pkl")
 # -------------------------
+
+# %%
+# -------------------------
+# NUMBA simulator + stats
+# -------------------------
+@nb.njit(cache=True)
+def simulator_nb(theta, y):
+    """Single-particle: theta is 1-D (n_para,), y is 1-D (n_samples,). Fills y in-place."""
+    mu = theta[0]
+    sigma = theta[1]
+    # Numba's internal RNG (independent of global NumPy RNG)
+    for i in range(y.size):
+        y[i] = mu + sigma * np.random.standard_normal()
+
+
+@nb.njit(cache=True)
+def stats_fn_nb(y, ss):
+    """Single-particle: y is 1-D (n_samples,), ss is 1-D (n_stats,). Fills ss in-place."""
+    s = 0.0
+    for i in range(y.size):
+        s += y[i]
+    m = s / y.size
+    v = 0.0
+    for i in range(y.size):
+        d = y[i] - m
+        v += d * d
+    ss[0] = m
+    ss[1] = np.sqrt(v / y.size)
+
+f_dist_fast = make_f_dist(
+    n_samples=n_samples,
+    ss_obs=ss_obs,
+    use_numba=True,
+    n_workers=4,
+    simulator=simulator_nb,
+    stats_fn=stats_fn_nb,
+)
+
+# %%
+# do the same using numba stats function
+ss_obs_nb = np.empty((n_stats,), dtype=np.float64)
+stats_fn_nb(y_obs, ss_obs_nb)
+print("Observed summary statistics (numba):", ss_obs_nb)
+
+# %%
+tmp = np.empty((1, 2), dtype=np.float64)
+theta0 = prior.rvs(np.random.default_rng(0))  # any theta
+f_dist_fast(theta0, out=tmp)  # triggers compilation
+
+# %%
+# Testing numba version
+proposal_nb = DifferentialEvolution(n_para=2)
+# -------------------------
+# Run: Differential Evolution, Single Epsilon
+# -------------------------
+config_nb = SABCConfig(
+    f_dist=f_dist_fast,
+    prior=prior,
+    n_particles=n_particles,
+    algorithm="single_eps", # or "multi_eps"
+    proposal=proposal_nb,
+    show_checkpoint=200,
+    show_progressbar=True,
+    parallel_batches=True,
+)
+out_dif_nb = sabc(config_nb, n_simulation=n_simulation)
 
 # %% [markdown]
 # ### Run SABC (DE, multi_eps, 2 stats)
