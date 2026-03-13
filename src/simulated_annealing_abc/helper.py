@@ -34,7 +34,7 @@ def track_progress(iterable, show_progressbar: bool = True) -> Iterable:
     if not INTERACTIVE_SESSION:
         if show_progressbar:
             LOG.debug(
-                "Cannot show progress bar in an interactive session. Progress bars are disabled."
+                "Cannot show progress bar in a non-interactive session. Progress bars are disabled."
             )
         else:
             LOG.debug("Progress bars are disabled in non-interactive sessions.")

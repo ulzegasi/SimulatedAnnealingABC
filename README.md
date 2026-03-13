@@ -237,6 +237,13 @@ config = SABCConfig(
 result = sabc(config, n_simulation=1_000_000)
 ```
 
+If you run a long job with output redirected to a log file, prefer unbuffered Python so
+checkpoint lines are written promptly and can be monitored with `tail -f`:
+
+```bash
+python -u your_script.py > run.log 2>&1
+```
+
 #### SABCConfig fields
 
 |  Field                 |  Default         |  Description                                                                                                   |

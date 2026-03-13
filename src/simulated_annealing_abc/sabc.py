@@ -12,13 +12,21 @@ import numpy as np
 from scipy.optimize import root_scalar
 
 from .cdf_estimators import CDF1D, CDFMulti, build_cdf
-from .helper import track_progress
+from .helper import INTERACTIVE_SESSION, track_progress
 from .proposals import (
     DifferentialEvolution,
     Proposal,
 )
 
 LOG = logging.getLogger(__name__)
+
+
+def _format_eta_minutes(eta_seconds: float) -> str:
+    """Format ETA as DD:HH:MM, rounded to the nearest minute."""
+    total_minutes = max(0, int(round(eta_seconds / 60.0)))
+    days, rem_minutes = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(rem_minutes, 60)
+    return f"{days:02d}:{hours:02d}:{minutes:02d}"
 
 
 # -------------------------------------------
@@ -506,11 +514,16 @@ def _record_checkpoint(
     if (show_checkpoint is not None) and (ix % show_checkpoint == 0 or ix == n_population_updates):
         elapsed = (time.perf_counter_ns() - t_start) / 1e9
         eta = elapsed / ix * (n_population_updates - ix)
-        eta_str = f"{eta:.2f} seconds" if eta > 1 else "< 1 second"
-        LOG.debug(
+        eta_str = _format_eta_minutes(eta)
+        message = (
             f"Update {ix}/{n_population_updates}  "
-            f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  ETA={eta_str}",
+            f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  "
+            f"ETA (DD:HH:MM)={eta_str}"
         )
+        if INTERACTIVE_SESSION:
+            LOG.debug(message)
+        else:
+            print(message, flush=True)
 
     if ix % checkpoint_history == 0:
         state.epsilon_history.append(state.epsilon.copy())
@@ -934,6 +947,7 @@ def update_population(
 
     # ---------------------
     t_start = time.perf_counter_ns()
+    print("Initialization done, starting population updates", flush=True)
 
     if config.parallel_batches:
         _run_parallel_loop(population_state, n_population_updates, t_start)
