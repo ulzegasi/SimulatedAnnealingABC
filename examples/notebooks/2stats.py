@@ -45,7 +45,7 @@ from simulated_annealing_abc import (
     RandomWalk,
     StretchMove,
     save_sabc_result,
-    load_sabc_result
+    load_sabc_result,
 )
 
 # %%
@@ -296,7 +296,7 @@ n_stats = 2  # manually set
 # compute summary statistics (ss_obs) for the observed data (y_obs)
 ss_obs = np.empty((1, n_stats), dtype=np.float64)
 stats_fn(y_obs.reshape(1, -1), ss_obs)
-ss_obs = ss_obs.ravel() # -> (n_stats,)
+ss_obs = ss_obs.ravel()  # -> (n_stats,)
 print("Observed summary statistics:", ss_obs)
 
 # %%
@@ -308,9 +308,9 @@ f_dist = make_f_dist(
     ss_obs=ss_obs,
     simulator=simulator,
     stats_fn=stats_fn,
-    seed=123,          # simulator-level randomness (optional), for reproducibility of the simulator RNG inside f_dist
-    distance="abs",    # distance per statistic: abs(ss_sim-ss_obs)
-    n_workers=4,       # number of threads for simulator (default: 1)
+    seed=123,  # simulator-level randomness (optional), for reproducibility of the simulator RNG inside f_dist
+    distance="abs",  # distance per statistic: abs(ss_sim-ss_obs)
+    n_workers=4,  # number of threads for simulator (default: 1)
 )
 
 # %%
@@ -331,7 +331,7 @@ v = 1.0
 # since it typically changes between the initial run and subsequent updates.
 
 # To ensure reproducibility
-rng_alg  = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
+rng_alg = np.random.default_rng(18)  # algorithm randomness: accept/reject, resampling, etc.
 rng_prop = np.random.default_rng(22)  # proposal randomness
 
 proposal = DifferentialEvolution(n_para=2, rng=rng_prop)
@@ -344,7 +344,7 @@ config = SABCConfig(
     prior=prior,
     n_particles=n_particles,
     v=v,
-    algorithm="single_eps", # or "multi_eps"
+    algorithm="single_eps",  # or "multi_eps"
     proposal=proposal,
     rng=rng_alg,
     show_checkpoint=200,
@@ -361,7 +361,7 @@ out_dif_2 = update_population(out_dif, n_simulation=n_simulation)
 
 # %%
 # Population - stored as (n_particles, n_para), transpose for per-parameter slicing
-pop_dif = np.column_stack(out_dif_2.population) # or out_dif_2.population.T
+pop_dif = np.column_stack(out_dif_2.population)  # or out_dif_2.population.T
 mu = pop_dif[0, :]
 sigma = pop_dif[1, :]
 
@@ -399,14 +399,7 @@ cf = plt.contourf(MU, SIG, Z, levels=n_levels, cmap="Greys", zorder=1)
 plt.contour(MU, SIG, Z, levels=n_levels, colors="black", linewidths=0.6, alpha=0.6, zorder=2)
 # --- True parameters ---
 plt.scatter(
-    true_mu,
-    true_sigma,
-    c="red",
-    s=90,
-    linewidths=3.0,
-    marker="x",
-    zorder=3,
-    label="True value"
+    true_mu, true_sigma, c="red", s=90, linewidths=3.0, marker="x", zorder=3, label="True value"
 )
 
 plt.xlim(mu_lims)
@@ -568,6 +561,7 @@ save_sabc_result(out_dif_2, HERE / "test_results" / "out_DE_sing_2stats.pkl")
 # out_dif_2 = load_sabc_result(HERE / "test_results" / "out_DE_sing_2stats.pkl")
 # -------------------------
 
+
 # %%
 # -------------------------
 # NUMBA simulator + stats
@@ -595,6 +589,7 @@ def stats_fn_nb(y, ss):
         v += d * d
     ss[0] = m
     ss[1] = np.sqrt(v / y.size)
+
 
 f_dist_fast = make_f_dist(
     n_samples=n_samples,
@@ -626,7 +621,7 @@ config_nb = SABCConfig(
     f_dist=f_dist_fast,
     prior=prior,
     n_particles=n_particles,
-    algorithm="single_eps", # or "multi_eps"
+    algorithm="single_eps",  # or "multi_eps"
     proposal=proposal_nb,
     show_checkpoint=200,
     show_progressbar=True,

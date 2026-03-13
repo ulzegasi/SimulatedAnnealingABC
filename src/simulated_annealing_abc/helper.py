@@ -40,17 +40,17 @@ def track_progress(iterable, show_progressbar: bool = True) -> Iterable:
             LOG.debug("Progress bars are disabled in non-interactive sessions.")
         return iterable
 
-    if show_progressbar and _has_rich:
-        return track(
-            iterable,
-            description="Running population updates",
-            transient=True,
-        )
-    elif show_progressbar and _has_tqdm:
+    if show_progressbar and _has_tqdm:
         return tqdm(
             iterable,
             desc="Running population updates",
             leave=False,
+        )
+    elif show_progressbar and _has_rich:
+        return track(
+            iterable,
+            description="Running population updates",
+            transient=True,
         )
     else:
         LOG.debug("Running population updates without progress bars.")

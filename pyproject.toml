@@ -20,7 +20,7 @@ Source = "https://github.com/ulzegasi/SimulatedAnnealingABC"
 
 [project.optional-dependencies]
 numba = ["numba"]
-viz = ["tqdm", "rich", "matplotlib"]
+viz = ["tqdm", "rich", "matplotlib", "emcee", "ipywidgets"]
 test = ["pytest", "pytest-cov"]
 
 [tool.ty.src]

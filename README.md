@@ -65,6 +65,26 @@ conda env create -f environment.sabc.yml
 conda activate sabc
 ```
 
+Install the package into that environment:
+
+```bash
+pip install .
+```
+
+For local development, install it in editable mode so source changes are picked up immediately:
+
+```bash
+pip install -e .
+```
+
+To include optional visualization and notebook dependencies as well, install the `viz` extra:
+
+```bash
+pip install -e '.[viz]'
+```
+
+The `viz` extra currently installs `tqdm`, `rich`, `matplotlib`, `emcee`, and `ipywidgets`.
+
 **Note**
 The code currently targets Python ≥ 3.10.
 
