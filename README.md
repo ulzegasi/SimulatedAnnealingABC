@@ -409,6 +409,14 @@ updates concurrently. This is an emcee-style relaxation: both halves see a
 stale snapshot of the other half (instead of batch 2 seeing batch 1's freshly
 updated state).
 
+Use this option with caution. Because both half-batches are updated against
+stale snapshots, this is only an approximate parallelization of the serial
+algorithm and may violate detailed balance. In many practical cases the effect
+on the posterior should be minor, but it is not guaranteed to be exactly the
+same as the default serial update. The recommended choice is to leave
+`parallel_batches=False` unless you have a specific reason to trade exactness
+for speed.
+
 ```python
 config = SABCConfig(
     f_dist=f_dist,
@@ -428,9 +436,8 @@ When enabled, the library internally:
 -   Submits both half-batch updates to a `ThreadPoolExecutor(max_workers=2)`
 
 This changes MCMC dynamics (both halves see stale snapshots instead of
-the serial dependency), which is why it is opt-in. Statistically, this is
-the same relaxation used by the emcee ensemble sampler and is valid for
-the SABC algorithm.
+the serial dependency), which is why it is opt-in. Treat it as an approximate
+acceleration rather than the reference algorithm.
 
 ### Thread-safety requirements
 
