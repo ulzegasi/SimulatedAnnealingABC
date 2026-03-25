@@ -517,7 +517,8 @@ def _record_checkpoint(
         eta_str = _format_eta_minutes(eta)
         message = (
             f"Update {ix}/{n_population_updates}  "
-            f"avg_u={np.mean(u):.4g}  eps={np.round(state.epsilon, 4)}  "
+            f"avg_u={np.mean(u):.4g}  "
+            f"eps={np.array2string(state.epsilon, precision=4, suppress_small=False)}  "
             f"ETA (DD:HH:MM)={eta_str}"
         )
         if INTERACTIVE_SESSION:
