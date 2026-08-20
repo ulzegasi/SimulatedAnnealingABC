@@ -12,6 +12,7 @@ from simulated_annealing_abc import (
     sabc,
     update_population,
 )
+from simulated_annealing_abc.sabc import update_epsilon_multi_eps
 
 
 class TestSABCConfig:
@@ -56,6 +57,24 @@ class TestSABCConfig:
         assert config.resample == 100
         assert config.proposal is proposal
         assert config.parallel_batches is True
+
+
+class TestEpsilonUpdates:
+    """Tests for adaptive temperature updates."""
+
+    def test_multi_epsilon_uses_updated_schedule(self):
+        """Test the multi-epsilon update against equations 19 and 20."""
+        beta = np.array([1.0, 2.0])
+        exp_neg_beta = np.exp(-beta)
+        u_bar = (1.0 - exp_neg_beta * (1.0 + beta)) / (beta * (1.0 - exp_neg_beta))
+        u = np.tile(u_bar, (8, 1))
+        v = 1.7
+
+        cn = 5.0  # (2 * n_stats + 2)! / ((n_stats + 1)! * (n_stats + 2)!)
+        beta_effective = beta + v / (cn * u_bar * np.sqrt(np.prod(u_bar)))
+        expected = 1.0 / beta_effective
+
+        np.testing.assert_allclose(update_epsilon_multi_eps(u, v), expected, rtol=1e-10)
 
 
 class TestSABCBasic:

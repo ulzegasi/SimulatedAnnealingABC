@@ -175,6 +175,9 @@ def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
 def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
     """Compute new epsilon vector (one per summary statistic).
 
+    Uses the multi-temperature annealing schedule with ``v`` as the tunable
+    velocity parameter (that is, ``v`` takes the place of ``v_tilde``).
+
     Args:
         u: Transformed distances, shape ``(n_particles, n_stats)``.
         v: Annealing speed parameter.
@@ -192,6 +195,7 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
     cn = math.factorial(2 * n_stats + 2) / (
         math.factorial(n_stats + 1) * math.factorial(n_stats + 2)
     )
+    sqrt_u_product = math.sqrt(float(np.prod(u_bar)))
 
     epsilon_new = np.empty(n_stats, dtype=float)
 
@@ -218,10 +222,6 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
         if u_bar_i >= 0.5:
             u_bar_i = 0.5 - 1e-12
 
-        q = u_bar / u_bar_i
-        num = 1.0 + np.sum(q ** (n_stats / 2))
-        den = cn * (n_stats + 1) * (u_bar_i ** (1 + n_stats / 2)) * np.prod(q)
-
         # --- robust bracketing ---
         a = 1e-6
         b = max(1.0, 10.0 / u_bar_i)
@@ -247,7 +247,8 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
             raise RuntimeError(f"Failed to find root for beta (stat {i}).")
 
         beta_i = float(sol.root)
-        epsilon_new[i] = 1.0 / (beta_i + v * num / den)
+        beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
+        epsilon_new[i] = 1.0 / beta_effective_i
 
     return epsilon_new
 
