@@ -116,10 +116,11 @@ class TestEpsilonUpdates:
         assert np.all(np.isfinite(epsilon))
         assert np.all(epsilon > 0)
 
-    def test_curved_rejects_nonpositive_external_beta(self):
-        """Do not silently clip a force outside the positive-temperature domain."""
-        with pytest.raises(RuntimeError, match="positive external temperature"):
-            update_epsilon_multi_eps(np.array([[1e-6, 0.4]]), 1.0)
+    def test_curved_allows_negative_external_beta(self):
+        """Retain the signed force for strongly anisotropic bounded energies."""
+        epsilon = update_epsilon_multi_eps(np.array([[1e-6, 0.4]]), 1.0)
+        assert np.all(np.isfinite(epsilon))
+        assert np.any(epsilon < 0)
 
     @pytest.mark.parametrize("schedule", ["ray_geodesic", "curved_geodesic"])
     def test_schedule_used_by_sampler(self, mock_f_dist, simple_prior, schedule):

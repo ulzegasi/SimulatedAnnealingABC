@@ -289,18 +289,25 @@ epsilon_i = 1 / beta_external_i
 ```
 
 Here `v` is the same nominal speed parameter as on `temp`, and
-`c_n = (2*n+2)! / ((n+1)! * (n+2)!)`. The finite-support inversion for `beta_i`,
-including its existing clipping at `U_i >= 0.5`, is unchanged. The curved force
-uses the floored population means, without that inversion-only upper clipping.
+`c_n = (2*n+2)! / ((n+1)! * (n+2)!)`. The curved schedule inverts the finite-support
+relation for signed `beta_i`: `U=0.5` gives zero and `U>0.5` gives negative beta.
+Reflection `beta(1-U)=-beta(U)` and a small-beta series avoid overflow and
+cancellation. Endpoint means are regularized at a distance of `1e-12` from
+0 and 1 for inversion. The curved force uses the lower-floored population means.
 The `single_eps` algorithm and its default selection are unchanged.
 
 The `sin(rho)/rho` limit is evaluated continuously at zero; the force magnitude
 is evaluated in log space and capped at the largest finite float if necessary.
-Negative force components are retained, but a nonpositive/nonfinite external
-inverse temperature raises an explicit error rather than silently changing the
-force. Thus extremely anisotropic energies can fall outside the supported
-positive-temperature domain. This is an adaptive force, not an enforcement of
-unit energy ratios in a finite stochastic run.
+Negative force and external inverse-temperature components are retained: the
+factor `exp(-beta_e*u)` is normalizable for every finite signed `beta_e` because
+the transformed distances are bounded in `[0,1]`. Zero external beta is stored
+as `epsilon=inf`, so the existing Metropolis calculation uses `1/epsilon=0`.
+Negative beta temporarily favors larger transformed distances; it must not be
+replaced by its absolute value or clipped to positive beta. Nonfinite external
+beta still raises an error. DE, acceptance, and resampling are unchanged.
+This removes an artificial positivity restriction, but does not establish that
+the approximate geodesic law is valid far from its derivation regime, nor
+guarantee unit energy ratios or improved accuracy in a finite stochastic run.
 
 Select `annealing_schedule="ray_geodesic"` to recover the original `temp`
 multi-epsilon update, including its original numerical behavior.

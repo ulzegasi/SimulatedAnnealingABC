@@ -176,6 +176,41 @@ def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
     return np.array([float(sol.root)], dtype=float)
 
 
+def _inverse_mean_energy(mean_u: float) -> float:
+    """Invert the mean of exp(-beta*u) on [0, 1] for either sign of beta.
+
+    Reflection gives beta(1-U) = -beta(U). Endpoints are regularized at
+    1e-12, matching the small-energy floor used by the annealing force.
+    """
+    if not math.isfinite(mean_u) or not 0.0 <= mean_u <= 1.0:
+        raise ValueError(f"Mean transformed energy must be in [0, 1], got {mean_u}.")
+    if mean_u == 0.5:
+        return 0.0
+    target = max(min(mean_u, 1.0 - mean_u), 1e-12)
+    deficit = 0.5 - target
+    if deficit < 1e-5:
+        # Inverse series: preserve relative accuracy even one ULP from U=1/2.
+        beta = deficit * (12.0 + (144.0 / 5.0) * deficit * deficit)
+        return math.copysign(beta, 0.5 - mean_u)
+
+    def residual(beta: float) -> float:
+        if beta < 0.1:
+            # Evaluate U(beta)-target without subtracting two numbers near 1/2.
+            b2 = beta * beta
+            return deficit - beta * (
+                1.0 / 12.0 - b2 * (1.0 / 720.0 - b2 * (1.0 / 30240.0 - b2 / 1209600.0))
+            )
+        exp_neg = math.exp(-beta)
+        return 1.0 / beta - exp_neg / (-math.expm1(-beta)) - target
+
+    # The extra factor avoids a same-sign bracket from reciprocal rounding
+    # when the exponentially small correction is below machine precision.
+    sol = root_scalar(residual, bracket=(0.0, 2.0 / target), method="brentq", xtol=1e-15)
+    if not sol.converged:
+        raise RuntimeError(f"Failed to invert mean transformed energy {mean_u}.")
+    return math.copysign(float(sol.root), 0.5 - mean_u)
+
+
 # Update multiple epsilons.
 def update_epsilon_multi_eps(
     u: np.ndarray, v: float, schedule: str = "curved_geodesic"
@@ -191,7 +226,9 @@ def update_epsilon_multi_eps(
         schedule: Curved geodesic toward unit energy ratios, or the original ray.
 
     Returns:
-        Array of length ``n_stats`` containing the updated epsilons.
+        Array of length ``n_stats`` containing the updated epsilons. For the
+        curved schedule these can be negative, or infinite when external beta
+        is zero; the Metropolis kernel uses their reciprocals.
     """
     if u.ndim != 2:
         raise ValueError("u must be 2D (n_particles, n_stats).")
@@ -210,6 +247,8 @@ def update_epsilon_multi_eps(
     else:
         if not np.isfinite(v) or v <= 0:
             raise ValueError(f"Curved annealing requires finite positive v, got v={v}.")
+        if not np.all(np.isfinite(u)) or np.any(u < 0) or np.any(u > 1):
+            raise ValueError("Curved annealing requires finite transformed distances in [0, 1].")
         log_u = np.log(u_bar)
         delta = log_u - np.mean(log_u)
         rho = math.sqrt(n_stats / (4 * (n_stats + 1)) * float(delta @ delta))
@@ -237,6 +276,24 @@ def update_epsilon_multi_eps(
 
     for i in range(n_stats):
         u_bar_i = float(u_bar[i])
+
+        if schedule == "curved_geodesic":
+            beta_i = _inverse_mean_energy(u_bar_i)
+            factor = float(geometry[i])
+            force = 0.0 if factor == 0.0 else math.copysign(
+                math.exp(min(float(log_scale[i]) + math.log(abs(factor)), max_log_force)),
+                factor,
+            )
+            beta_effective_i = beta_i + force
+            if not math.isfinite(beta_effective_i):
+                raise RuntimeError(
+                    f"Curved schedule has nonfinite external inverse temperature for stat {i}: "
+                    f"rho={rho:.6g}, beta_effective={beta_effective_i:.6g}."
+                )
+            # Bounded energies admit signed beta. beta=0 is the uniform factor;
+            # epsilon=inf represents it exactly in the existing acceptance code.
+            epsilon_new[i] = math.inf if beta_effective_i == 0.0 else 1.0 / beta_effective_i
+            continue
 
         # A positive beta root exists only for u_bar_i < 0.5
         # (as beta -> 0, ratio -> 1/2; as beta -> inf, ratio -> 0).
@@ -268,20 +325,7 @@ def update_epsilon_multi_eps(
             raise RuntimeError(f"Failed to find root for beta (stat {i}).")
 
         beta_i = float(sol.root)
-        if schedule == "ray_geodesic":
-            beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
-        else:
-            factor = float(geometry[i])
-            force = 0.0 if factor == 0.0 else math.copysign(
-                math.exp(min(float(log_scale[i]) + math.log(abs(factor)), max_log_force)),
-                factor,
-            )
-            beta_effective_i = beta_i + force
-            if not math.isfinite(beta_effective_i) or beta_effective_i <= 0:
-                raise RuntimeError(
-                    f"Curved schedule has no finite positive external temperature for stat {i}: "
-                    f"rho={rho:.6g}, beta_effective={beta_effective_i:.6g}."
-                )
+        beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
         epsilon_new[i] = 1.0 / beta_effective_i
 
     return epsilon_new
