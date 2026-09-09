@@ -254,7 +254,6 @@ python -u your_script.py > run.log 2>&1
 |  `v`                   |  1.0             |  Annealing speed                                                                                               |
 |  `delta`               |  0.1             |  Resampling parameter                                                                                          |
 |  `algorithm`           |  `"single_eps"`  |  `"single_eps"` or `"multi_eps"`                                                                               |
-| `annealing_schedule` | `"curved_geodesic"` | Multi-epsilon force: `"curved_geodesic"` or original `"ray_geodesic"`; unused for `single_eps`. |
 |  `resample`            |  `None`          |  Resampling interval (defaults to `2 * n_particles`)                                                           |
 |  `proposal`            |  `None`          |  Proposal mechanism (defaults to `DifferentialEvolution`)                                                      |
 |  `parallel_batches`    |  `False`         |  Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization).           |
@@ -266,14 +265,14 @@ python -u your_script.py > run.log 2>&1
 
 #### Curved multi-temperature annealing
 
-On this branch, `algorithm="multi_eps"` defaults to the curved-geodesic force.
+On this branch, `algorithm="multi_eps"` uses the curved-geodesic force.
 The default proposal remains differential evolution; no proposal, acceptance,
 resampling, or random-stream logic is changed. For example:
 
 ```python
 config = SABCConfig(
     f_dist=f_dist, prior=prior, algorithm="multi_eps",
-    annealing_schedule="curved_geodesic", v=1.0,
+    v=1.0,
 )
 ```
 
@@ -302,8 +301,9 @@ force. Thus extremely anisotropic energies can fall outside the supported
 positive-temperature domain. This is an adaptive force, not an enforcement of
 unit energy ratios in a finite stochastic run.
 
-Select `annealing_schedule="ray_geodesic"` to recover the original `temp`
-multi-epsilon update, including its original numerical behavior.
+The multi-epsilon annealing rule is determined by the branch: `curved-geodesic`
+uses this curved force, `temp` uses the ray-geodesic rule, and `main` uses the
+original rule. There is no schedule configuration option.
 
 ### 5. Use update_population to continue from previous result
 
