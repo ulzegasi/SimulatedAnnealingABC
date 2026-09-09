@@ -61,8 +61,6 @@ class SABCConfig:
         checkpoint_history: Record histories every N population updates.
         show_progressbar: Show a progress bar (tqdm/rich) if available.
         show_checkpoint: Log progress every N population updates.
-        annealing_schedule: Multi-epsilon force, ``"curved_geodesic"`` (default)
-            or the original ``"ray_geodesic"``. Ignored by ``single_eps``.
     """
 
     # Problem definition
@@ -90,7 +88,6 @@ class SABCConfig:
     checkpoint_history: int = 1
     show_progressbar: bool | None = None
     show_checkpoint: float | int | None = 100
-    annealing_schedule: str = "curved_geodesic"
 
     def __post_init__(self):
         """Validate configuration."""
@@ -100,8 +97,6 @@ class SABCConfig:
             raise ValueError("Resampling parameter delta must be positive.")
         if self.algorithm not in ("single_eps", "multi_eps"):
             raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
-        if self.annealing_schedule not in ("ray_geodesic", "curved_geodesic"):
-            raise ValueError(f"Unknown annealing_schedule={self.annealing_schedule!r}.")
         if self.rng is not None and self.seed is not None:
             raise ValueError("Provide either rng or seed, not both.")
 
@@ -212,124 +207,53 @@ def _inverse_mean_energy(mean_u: float) -> float:
 
 
 # Update multiple epsilons.
-def update_epsilon_multi_eps(
-    u: np.ndarray, v: float, schedule: str = "curved_geodesic"
-) -> np.ndarray:
-    """Compute new epsilon vector (one per summary statistic).
-
-    Uses the multi-temperature annealing schedule with ``v`` as the tunable
-    velocity parameter (that is, ``v`` takes the place of ``v_tilde``).
+def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
+    """Compute signed curved-geodesic temperatures for bounded energies.
 
     Args:
-        u: Transformed distances, shape ``(n_particles, n_stats)``.
-        v: Annealing speed parameter.
-        schedule: Curved geodesic toward unit energy ratios, or the original ray.
+        u: Transformed distances, shape (n_particles, n_stats), in [0, 1].
+        v: Finite positive annealing speed parameter.
 
     Returns:
-        Array of length ``n_stats`` containing the updated epsilons. For the
-        curved schedule these can be negative, or infinite when external beta
-        is zero; the Metropolis kernel uses their reciprocals.
+        Signed epsilons; external beta=0 is represented by epsilon=inf.
     """
     if u.ndim != 2:
         raise ValueError("u must be 2D (n_particles, n_stats).")
-    if schedule not in ("ray_geodesic", "curved_geodesic"):
-        raise ValueError(f"Unknown schedule={schedule!r}.")
+    if not np.isfinite(v) or v <= 0:
+        raise ValueError(f"Curved annealing requires finite positive v, got v={v}.")
+    if not np.all(np.isfinite(u)) or np.any(u < 0) or np.any(u > 1):
+        raise ValueError("Curved annealing requires finite transformed distances in [0, 1].")
 
     n_stats = u.shape[1]
-    u_bar = np.mean(u, axis=0)  # mean over particles (vector of size n_stats)
-    u_bar = np.maximum(u_bar, 1e-12)
-
+    u_bar = np.maximum(np.mean(u, axis=0), 1e-12)
     cn = math.factorial(2 * n_stats + 2) / (
         math.factorial(n_stats + 1) * math.factorial(n_stats + 2)
     )
-    if schedule == "ray_geodesic":
-        sqrt_u_product = math.sqrt(float(np.prod(u_bar)))
-    else:
-        if not np.isfinite(v) or v <= 0:
-            raise ValueError(f"Curved annealing requires finite positive v, got v={v}.")
-        if not np.all(np.isfinite(u)) or np.any(u < 0) or np.any(u > 1):
-            raise ValueError("Curved annealing requires finite transformed distances in [0, 1].")
-        log_u = np.log(u_bar)
-        delta = log_u - np.mean(log_u)
-        rho = math.sqrt(n_stats / (4 * (n_stats + 1)) * float(delta @ delta))
-        # np.sinc(x) = sin(pi*x)/(pi*x), including the exact limit at zero.
-        geometry = math.cos(rho) + n_stats / (2 * (n_stats + 1)) * np.sinc(rho / np.pi) * delta
-        log_scale = math.log(v) - math.log(cn) - log_u - 0.5 * np.sum(log_u)
-        max_log_force = math.log(np.finfo(float).max)
-
+    log_u = np.log(u_bar)
+    delta = log_u - np.mean(log_u)
+    rho = math.sqrt(n_stats / (4 * (n_stats + 1)) * float(delta @ delta))
+    # np.sinc includes the exact sin(rho)/rho limit at zero.
+    geometry = math.cos(rho) + n_stats / (2 * (n_stats + 1)) * np.sinc(rho / np.pi) * delta
+    log_scale = math.log(v) - math.log(cn) - log_u - 0.5 * np.sum(log_u)
+    max_log_force = math.log(np.finfo(float).max)
     epsilon_new = np.empty(n_stats, dtype=float)
-
-    def g(beta: float, u_bar_i: float) -> float:
-        # For very small beta, use a series expansion to avoid 0/0 cancellation:
-        # ratio = 1/2 - beta/12 + O(beta^2)
-        if beta < 1e-6:
-            return (0.5 - beta / 12.0) - u_bar_i
-
-        # Otherwise, stable computation using expm1
-        em1 = math.expm1(-beta)  # e^{-beta} - 1
-        exp_neg = em1 + 1.0  # e^{-beta}
-
-        num_g = 1.0 - exp_neg * (1.0 + beta)
-        den_g = beta * (1.0 - exp_neg)
-
-        return (num_g / den_g) - u_bar_i
-
     for i in range(n_stats):
-        u_bar_i = float(u_bar[i])
-
-        if schedule == "curved_geodesic":
-            beta_i = _inverse_mean_energy(u_bar_i)
-            factor = float(geometry[i])
-            force = 0.0 if factor == 0.0 else math.copysign(
-                math.exp(min(float(log_scale[i]) + math.log(abs(factor)), max_log_force)),
-                factor,
-            )
-            beta_effective_i = beta_i + force
-            if not math.isfinite(beta_effective_i):
-                raise RuntimeError(
-                    f"Curved schedule has nonfinite external inverse temperature for stat {i}: "
-                    f"rho={rho:.6g}, beta_effective={beta_effective_i:.6g}."
-                )
-            # Bounded energies admit signed beta. beta=0 is the uniform factor;
-            # epsilon=inf represents it exactly in the existing acceptance code.
-            epsilon_new[i] = math.inf if beta_effective_i == 0.0 else 1.0 / beta_effective_i
-            continue
-
-        # A positive beta root exists only for u_bar_i < 0.5
-        # (as beta -> 0, ratio -> 1/2; as beta -> inf, ratio -> 0).
-        if u_bar_i >= 0.5:
-            u_bar_i = 0.5 - 1e-12
-
-        # --- robust bracketing ---
-        a = 1e-6
-        b = max(1.0, 10.0 / u_bar_i)
-
-        fa = g(a, u_bar_i)
-        fb = g(b, u_bar_i)
-
-        # Expand upper bound until sign change (should happen quickly)
-        k = 0
-        while fa * fb > 0 and k < 60:
-            b *= 2.0
-            fb = g(b, u_bar_i)
-            k += 1
-
-        if fa * fb > 0:
+        beta_i = _inverse_mean_energy(float(u_bar[i]))
+        factor = float(geometry[i])
+        force = 0.0 if factor == 0.0 else math.copysign(
+            math.exp(min(float(log_scale[i]) + math.log(abs(factor)), max_log_force)),
+            factor,
+        )
+        beta_effective_i = beta_i + force
+        if not math.isfinite(beta_effective_i):
             raise RuntimeError(
-                f"Failed to bracket beta root for stat {i}: "
-                f"u_bar_i={u_bar_i:.6g}, g(a)={fa:.6g}, g(b)={fb:.6g}"
+                f"Curved schedule has nonfinite external inverse temperature for stat {i}: "
+                f"rho={rho:.6g}, beta_effective={beta_effective_i:.6g}."
             )
-
-        sol = root_scalar(g, args=(u_bar_i,), bracket=(a, b), method="brentq")
-        if not sol.converged:
-            raise RuntimeError(f"Failed to find root for beta (stat {i}).")
-
-        beta_i = float(sol.root)
-        beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
-        epsilon_new[i] = 1.0 / beta_effective_i
-
+        # Bounded energies admit signed beta. The unchanged Metropolis kernel
+        # uses 1/epsilon=0 for the uniform (beta=0) factor.
+        epsilon_new[i] = math.inf if beta_effective_i == 0.0 else 1.0 / beta_effective_i
     return epsilon_new
-
 
 # -------------------------------------------
 # Resampling
@@ -666,7 +590,7 @@ def _iteration_tail(
 
     # Update epsilon
     if state.algorithm == "multi_eps":
-        state.epsilon = update_epsilon_multi_eps(u, config.v, config.annealing_schedule)
+        state.epsilon = update_epsilon_multi_eps(u, config.v)
     else:
         state.epsilon = update_epsilon_single_eps(float(np.mean(u)), config.v)
 
@@ -949,7 +873,7 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
     u_history = [np.mean(u, axis=0)]
 
     if algorithm == "multi_eps":
-        epsilon = update_epsilon_multi_eps(u, v, config.annealing_schedule)
+        epsilon = update_epsilon_multi_eps(u, v)
     elif algorithm == "single_eps":
         epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
     else:

@@ -1,5 +1,7 @@
 """Unit tests for SABC core algorithm."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -34,12 +36,6 @@ class TestSABCConfig:
         assert config.resample is None
         assert config.proposal is None
         assert config.parallel_batches is False
-        assert config.annealing_schedule == "curved_geodesic"
-
-    def test_invalid_schedule(self, mock_f_dist, simple_prior):
-        """Reject misspelled schedules at configuration time."""
-        with pytest.raises(ValueError, match="annealing_schedule"):
-            SABCConfig(f_dist=mock_f_dist, prior=simple_prior, annealing_schedule="unknown")
 
     def test_init_custom_values(self, mock_f_dist, simple_prior, rng):
         """Test custom values."""
@@ -68,22 +64,6 @@ class TestSABCConfig:
 class TestEpsilonUpdates:
     """Tests for adaptive temperature updates."""
 
-    def test_multi_epsilon_uses_updated_schedule(self):
-        """Test the multi-epsilon update against equations 19 and 20."""
-        beta = np.array([1.0, 2.0])
-        exp_neg_beta = np.exp(-beta)
-        u_bar = (1.0 - exp_neg_beta * (1.0 + beta)) / (beta * (1.0 - exp_neg_beta))
-        u = np.tile(u_bar, (8, 1))
-        v = 1.7
-
-        cn = 5.0  # (2 * n_stats + 2)! / ((n_stats + 1)! * (n_stats + 2)!)
-        beta_effective = beta + v / (cn * u_bar * np.sqrt(np.prod(u_bar)))
-        expected = 1.0 / beta_effective
-
-        np.testing.assert_allclose(
-            update_epsilon_multi_eps(u, v, "ray_geodesic"), expected, rtol=1e-10
-        )
-
     def test_curved_force_formula(self):
         """Recover the prescribed off-diagonal force with known internal betas."""
         beta = np.array([2.0, 3.0, 4.0])
@@ -100,11 +80,17 @@ class TestEpsilonUpdates:
     @pytest.mark.parametrize("perturbation", [0.0, 1e-12])
     def test_curved_diagonal_limit(self, n_stats, perturbation):
         """At and near rho=0 the curved force continuously reduces to the ray."""
-        u = np.full((4, n_stats), 0.1)
+        beta = 10.0
+        mean_u = 1 / beta - 1 / np.expm1(beta)
+        cn = math.factorial(2 * n_stats + 2) / (
+            math.factorial(n_stats + 1) * math.factorial(n_stats + 2)
+        )
+        expected = np.full(n_stats, 1 / (beta + 1 / (cn * mean_u ** (1 + n_stats / 2))))
+        u = np.full((4, n_stats), mean_u)
         u[:, 0] += perturbation
         np.testing.assert_allclose(
             update_epsilon_multi_eps(u, 1.0),
-            update_epsilon_multi_eps(u, 1.0, "ray_geodesic"),
+            expected,
             rtol=1e-9,
         )
 
@@ -122,24 +108,26 @@ class TestEpsilonUpdates:
         assert np.all(np.isfinite(epsilon))
         assert np.any(epsilon < 0)
 
-    @pytest.mark.parametrize("schedule", ["ray_geodesic", "curved_geodesic"])
-    def test_schedule_used_by_sampler(self, mock_f_dist, simple_prior, schedule):
-        """Both initialization and updates use the selected schedule with default DE."""
+    def test_schedule_used_by_sampler(self, mock_f_dist, simple_prior):
+        """Both initialization and updates use the curved schedule with default DE."""
         config = SABCConfig(
-            f_dist=mock_f_dist, prior=simple_prior, n_particles=100,
-            algorithm="multi_eps", annealing_schedule=schedule, seed=12,
+            f_dist=mock_f_dist,
+            prior=simple_prior,
+            n_particles=100,
+            algorithm="multi_eps",
+            seed=12,
             show_progressbar=False,
         )
         result = initialization(config, n_simulation=500)
         np.testing.assert_allclose(
             result.state.epsilon,
-            update_epsilon_multi_eps(result.u, config.v, schedule),
+            update_epsilon_multi_eps(result.u, config.v),
         )
         result = update_population(result, n_simulation=400)
         assert isinstance(result.config.proposal, DifferentialEvolution)
         np.testing.assert_allclose(
             result.state.epsilon,
-            update_epsilon_multi_eps(result.u, config.v, schedule),
+            update_epsilon_multi_eps(result.u, config.v),
         )
         assert result.state.n_population_updates == 4
 
