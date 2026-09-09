@@ -61,6 +61,8 @@ class SABCConfig:
         checkpoint_history: Record histories every N population updates.
         show_progressbar: Show a progress bar (tqdm/rich) if available.
         show_checkpoint: Log progress every N population updates.
+        annealing_schedule: Multi-epsilon force, ``"curved_geodesic"`` (default)
+            or the original ``"ray_geodesic"``. Ignored by ``single_eps``.
     """
 
     # Problem definition
@@ -88,6 +90,7 @@ class SABCConfig:
     checkpoint_history: int = 1
     show_progressbar: bool | None = None
     show_checkpoint: float | int | None = 100
+    annealing_schedule: str = "curved_geodesic"
 
     def __post_init__(self):
         """Validate configuration."""
@@ -97,6 +100,8 @@ class SABCConfig:
             raise ValueError("Resampling parameter delta must be positive.")
         if self.algorithm not in ("single_eps", "multi_eps"):
             raise ValueError("algorithm must be 'single_eps' or 'multi_eps'.")
+        if self.annealing_schedule not in ("ray_geodesic", "curved_geodesic"):
+            raise ValueError(f"Unknown annealing_schedule={self.annealing_schedule!r}.")
         if self.rng is not None and self.seed is not None:
             raise ValueError("Provide either rng or seed, not both.")
 
@@ -172,7 +177,9 @@ def update_epsilon_single_eps(u_bar: float, v: float) -> np.ndarray:
 
 
 # Update multiple epsilons.
-def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
+def update_epsilon_multi_eps(
+    u: np.ndarray, v: float, schedule: str = "curved_geodesic"
+) -> np.ndarray:
     """Compute new epsilon vector (one per summary statistic).
 
     Uses the multi-temperature annealing schedule with ``v`` as the tunable
@@ -181,12 +188,15 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
     Args:
         u: Transformed distances, shape ``(n_particles, n_stats)``.
         v: Annealing speed parameter.
+        schedule: Curved geodesic toward unit energy ratios, or the original ray.
 
     Returns:
         Array of length ``n_stats`` containing the updated epsilons.
     """
     if u.ndim != 2:
         raise ValueError("u must be 2D (n_particles, n_stats).")
+    if schedule not in ("ray_geodesic", "curved_geodesic"):
+        raise ValueError(f"Unknown schedule={schedule!r}.")
 
     n_stats = u.shape[1]
     u_bar = np.mean(u, axis=0)  # mean over particles (vector of size n_stats)
@@ -195,7 +205,18 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
     cn = math.factorial(2 * n_stats + 2) / (
         math.factorial(n_stats + 1) * math.factorial(n_stats + 2)
     )
-    sqrt_u_product = math.sqrt(float(np.prod(u_bar)))
+    if schedule == "ray_geodesic":
+        sqrt_u_product = math.sqrt(float(np.prod(u_bar)))
+    else:
+        if not np.isfinite(v) or v <= 0:
+            raise ValueError(f"Curved annealing requires finite positive v, got v={v}.")
+        log_u = np.log(u_bar)
+        delta = log_u - np.mean(log_u)
+        rho = math.sqrt(n_stats / (4 * (n_stats + 1)) * float(delta @ delta))
+        # np.sinc(x) = sin(pi*x)/(pi*x), including the exact limit at zero.
+        geometry = math.cos(rho) + n_stats / (2 * (n_stats + 1)) * np.sinc(rho / np.pi) * delta
+        log_scale = math.log(v) - math.log(cn) - log_u - 0.5 * np.sum(log_u)
+        max_log_force = math.log(np.finfo(float).max)
 
     epsilon_new = np.empty(n_stats, dtype=float)
 
@@ -247,7 +268,20 @@ def update_epsilon_multi_eps(u: np.ndarray, v: float) -> np.ndarray:
             raise RuntimeError(f"Failed to find root for beta (stat {i}).")
 
         beta_i = float(sol.root)
-        beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
+        if schedule == "ray_geodesic":
+            beta_effective_i = beta_i + v / (cn * u_bar_i * sqrt_u_product)
+        else:
+            factor = float(geometry[i])
+            force = 0.0 if factor == 0.0 else math.copysign(
+                math.exp(min(float(log_scale[i]) + math.log(abs(factor)), max_log_force)),
+                factor,
+            )
+            beta_effective_i = beta_i + force
+            if not math.isfinite(beta_effective_i) or beta_effective_i <= 0:
+                raise RuntimeError(
+                    f"Curved schedule has no finite positive external temperature for stat {i}: "
+                    f"rho={rho:.6g}, beta_effective={beta_effective_i:.6g}."
+                )
         epsilon_new[i] = 1.0 / beta_effective_i
 
     return epsilon_new
@@ -588,7 +622,7 @@ def _iteration_tail(
 
     # Update epsilon
     if state.algorithm == "multi_eps":
-        state.epsilon = update_epsilon_multi_eps(u, config.v)
+        state.epsilon = update_epsilon_multi_eps(u, config.v, config.annealing_schedule)
     else:
         state.epsilon = update_epsilon_single_eps(float(np.mean(u)), config.v)
 
@@ -871,7 +905,7 @@ def initialization(config: SABCConfig, n_simulation: int) -> SABCResult:
     u_history = [np.mean(u, axis=0)]
 
     if algorithm == "multi_eps":
-        epsilon = update_epsilon_multi_eps(u, v)
+        epsilon = update_epsilon_multi_eps(u, v, config.annealing_schedule)
     elif algorithm == "single_eps":
         epsilon = update_epsilon_single_eps(float(np.mean(u)), v)
     else:

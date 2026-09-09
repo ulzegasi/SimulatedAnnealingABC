@@ -12,7 +12,7 @@ from simulated_annealing_abc import (
     sabc,
     update_population,
 )
-from simulated_annealing_abc.sabc import update_epsilon_multi_eps
+from simulated_annealing_abc.sabc import initialization, update_epsilon_multi_eps
 
 
 class TestSABCConfig:
@@ -34,6 +34,12 @@ class TestSABCConfig:
         assert config.resample is None
         assert config.proposal is None
         assert config.parallel_batches is False
+        assert config.annealing_schedule == "curved_geodesic"
+
+    def test_invalid_schedule(self, mock_f_dist, simple_prior):
+        """Reject misspelled schedules at configuration time."""
+        with pytest.raises(ValueError, match="annealing_schedule"):
+            SABCConfig(f_dist=mock_f_dist, prior=simple_prior, annealing_schedule="unknown")
 
     def test_init_custom_values(self, mock_f_dist, simple_prior, rng):
         """Test custom values."""
@@ -74,7 +80,67 @@ class TestEpsilonUpdates:
         beta_effective = beta + v / (cn * u_bar * np.sqrt(np.prod(u_bar)))
         expected = 1.0 / beta_effective
 
-        np.testing.assert_allclose(update_epsilon_multi_eps(u, v), expected, rtol=1e-10)
+        np.testing.assert_allclose(
+            update_epsilon_multi_eps(u, v, "ray_geodesic"), expected, rtol=1e-10
+        )
+
+    def test_curved_force_formula(self):
+        """Recover the prescribed off-diagonal force with known internal betas."""
+        beta = np.array([2.0, 3.0, 4.0])
+        mean_u = 1 / beta - 1 / np.expm1(beta)
+        delta = np.log(mean_u) - np.log(mean_u).mean()
+        rho = np.sqrt(3 / 16 * np.sum(delta**2))
+        force = 1.7 / (14 * mean_u * np.sqrt(np.prod(mean_u))) * (
+            np.cos(rho) + 3 / 8 * np.sin(rho) / rho * delta
+        )
+        actual = update_epsilon_multi_eps(np.tile(mean_u, (8, 1)), 1.7)
+        np.testing.assert_allclose(actual, 1 / (beta + force), rtol=1e-10)
+
+    @pytest.mark.parametrize("n_stats", [1, 3, 10])
+    @pytest.mark.parametrize("perturbation", [0.0, 1e-12])
+    def test_curved_diagonal_limit(self, n_stats, perturbation):
+        """At and near rho=0 the curved force continuously reduces to the ray."""
+        u = np.full((4, n_stats), 0.1)
+        u[:, 0] += perturbation
+        np.testing.assert_allclose(
+            update_epsilon_multi_eps(u, 1.0),
+            update_epsilon_multi_eps(u, 1.0, "ray_geodesic"),
+            rtol=1e-9,
+        )
+
+    @pytest.mark.parametrize("energy", [0.0, 1e-300, 1e-12])
+    def test_curved_small_energy(self, energy):
+        """Retain positive finite temperatures even when the product underflows."""
+        with np.errstate(divide="raise", invalid="raise", over="raise"):
+            epsilon = update_epsilon_multi_eps(np.full((2, 100), energy), 1.0)
+        assert np.all(np.isfinite(epsilon))
+        assert np.all(epsilon > 0)
+
+    def test_curved_rejects_nonpositive_external_beta(self):
+        """Do not silently clip a force outside the positive-temperature domain."""
+        with pytest.raises(RuntimeError, match="positive external temperature"):
+            update_epsilon_multi_eps(np.array([[1e-6, 0.4]]), 1.0)
+
+    @pytest.mark.parametrize("schedule", ["ray_geodesic", "curved_geodesic"])
+    def test_schedule_used_by_sampler(self, mock_f_dist, simple_prior, schedule):
+        """Both initialization and updates use the selected schedule with default DE."""
+        config = SABCConfig(
+            f_dist=mock_f_dist, prior=simple_prior, n_particles=100,
+            algorithm="multi_eps", annealing_schedule=schedule, seed=12,
+            show_progressbar=False,
+        )
+        result = initialization(config, n_simulation=500)
+        np.testing.assert_allclose(
+            result.state.epsilon,
+            update_epsilon_multi_eps(result.u, config.v, schedule),
+        )
+        result = update_population(result, n_simulation=400)
+        assert isinstance(result.config.proposal, DifferentialEvolution)
+        np.testing.assert_allclose(
+            result.state.epsilon,
+            update_epsilon_multi_eps(result.u, config.v, schedule),
+        )
+        assert result.state.n_population_updates == 4
 
 
 class TestSABCBasic:

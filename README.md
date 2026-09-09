@@ -254,6 +254,7 @@ python -u your_script.py > run.log 2>&1
 |  `v`                   |  1.0             |  Annealing speed                                                                                               |
 |  `delta`               |  0.1             |  Resampling parameter                                                                                          |
 |  `algorithm`           |  `"single_eps"`  |  `"single_eps"` or `"multi_eps"`                                                                               |
+| `annealing_schedule` | `"curved_geodesic"` | Multi-epsilon force: `"curved_geodesic"` or original `"ray_geodesic"`; unused for `single_eps`. |
 |  `resample`            |  `None`          |  Resampling interval (defaults to `2 * n_particles`)                                                           |
 |  `proposal`            |  `None`          |  Proposal mechanism (defaults to `DifferentialEvolution`)                                                      |
 |  `parallel_batches`    |  `False`         |  Run the two half-batch updates concurrently using threads. See [Parallelization](#parallelization).           |
@@ -262,6 +263,47 @@ python -u your_script.py > run.log 2>&1
 |  `checkpoint_history`  |  1               |  Record histories every N updates                                                                              |
 |  `show_progressbar`    |  `None`          |  Show progress bar if available                                                                                |
 |  `show_checkpoint`     |  `None`          |  Log progress every N updates                                                                                  |
+
+#### Curved multi-temperature annealing
+
+On this branch, `algorithm="multi_eps"` defaults to the curved-geodesic force.
+The default proposal remains differential evolution; no proposal, acceptance,
+resampling, or random-stream logic is changed. For example:
+
+```python
+config = SABCConfig(
+    f_dist=f_dist, prior=prior, algorithm="multi_eps",
+    annealing_schedule="curved_geodesic", v=1.0,
+)
+```
+
+Let `U` be the population mean transformed distances (with the existing `1e-12`
+floor), `P_i = log(U_i)`, `Delta_i = P_i - mean(P)`, and
+`rho^2 = n/(4*(n+1)) * sum(Delta_i^2)`. The external inverse temperatures are
+
+```text
+F_i = v / (c_n * U_i * (prod(U))^(1/2)) *
+      [cos(rho) + n/(2*(n+1)) * (sin(rho)/rho) * Delta_i]
+beta_external_i = beta_i(U_i) + F_i
+epsilon_i = 1 / beta_external_i
+```
+
+Here `v` is the same nominal speed parameter as on `temp`, and
+`c_n = (2*n+2)! / ((n+1)! * (n+2)!)`. The finite-support inversion for `beta_i`,
+including its existing clipping at `U_i >= 0.5`, is unchanged. The curved force
+uses the floored population means, without that inversion-only upper clipping.
+The `single_eps` algorithm and its default selection are unchanged.
+
+The `sin(rho)/rho` limit is evaluated continuously at zero; the force magnitude
+is evaluated in log space and capped at the largest finite float if necessary.
+Negative force components are retained, but a nonpositive/nonfinite external
+inverse temperature raises an explicit error rather than silently changing the
+force. Thus extremely anisotropic energies can fall outside the supported
+positive-temperature domain. This is an adaptive force, not an enforcement of
+unit energy ratios in a finite stochastic run.
+
+Select `annealing_schedule="ray_geodesic"` to recover the original `temp`
+multi-epsilon update, including its original numerical behavior.
 
 ### 5. Use update_population to continue from previous result
 
