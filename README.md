@@ -1,7 +1,6 @@
 # SimulatedAnnealingABC
 
-> **Recommended branch: [main](https://github.com/ulzegasi/SimulatedAnnealingABC/tree/main).**
-> Use `main` for inference; it retains the original multi-epsilon annealing rule.
+> **Recommended branch: main.** Use `main` for inference.
 > The `temp` and `curved-geodesic` branches contain experimental alternative
 > multi-epsilon annealing rules and are retained for reference only.
 
