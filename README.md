@@ -1,5 +1,10 @@
 # SimulatedAnnealingABC
 
+> **Recommended branch: [main](https://github.com/ulzegasi/SimulatedAnnealingABC/tree/main).**
+> Use `main` for inference; it retains the original multi-epsilon annealing rule.
+> The `temp` and `curved-geodesic` branches contain experimental alternative
+> multi-epsilon annealing rules and are retained for reference only.
+
 Approximate Bayesian Computation (ABC) is a family of simulation-based inference methods, also known as likelihood-free inference. This repository contains simulated-annealing-based ABC algorithms, collectively referred to as SABC methods.
 
 The package includes:
